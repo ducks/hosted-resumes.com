@@ -1,0 +1,17 @@
+The spec is ready to write to `.finna/specs/05-jobl-schema/spec.arf` but I need write permission for that path. Here's what the spec covers:
+
+**Key decisions:**
+
+- **Zod as single source of truth** - defines both runtime validation schemas and infers TypeScript types from them, no duplication
+- **Bottom-up schema composition** - small schemas (ContactInfo, ExperienceEntry, etc.) compose into the full JoblResume schema
+- **Two validation modes** - `validateResume()` for strict API-boundary validation, `validatePartial()` for editor autosave where the resume may be incomplete
+- **Flat error format** - transforms Zod's nested errors into `{ path: string, message: string }` for easy display in form UI
+- **Barrel export** via `src/lib/jobl/index.ts` so consumers import from `$lib/jobl`
+- **emptyResume() helper** - factory for new resume creation in the editor
+- **Unit tests** with vitest covering valid, minimal, invalid, and partial cases
+
+**Important caveat in the spec:** field names must be cross-referenced against the upstream JOBL spec (github.com/ducks/jobl) before implementation, since I couldn't access the repo to confirm exact TOML key names.
+
+**Backup:** hand-written TypeScript interfaces + manual validation functions, or valibot as a smaller-bundle alternative to zod.
+
+Can you grant write permission so I can save the file?

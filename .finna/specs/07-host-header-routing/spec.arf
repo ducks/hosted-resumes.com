@@ -1,0 +1,170 @@
+order = 7
+what = "Implement host-header detection in src/hooks.server.ts to classify each request as marketing, app, or tenant and expose routing context via event.locals"
+why = "The single SvelteKit instance serves three distinct surfaces - marketing site (hosted-resumes.com), authenticated app routes (hosted-resumes.com/dashboard, /editor, /settings), and tenant subdomain pages (username.hosted-resumes.com). Without host-header routing, SvelteKit has no way to distinguish a visitor on the marketing homepage from one viewing a tenant resume. This step establishes the routing context that every downstream layout, page load, and API endpoint depends on to render the correct content and apply the correct access rules. It must integrate cleanly with the auth hook from step 06 since both run in the same handle chain."
+how = """
+Step-by-step implementation plan:
+
+1. Define the routing context type in src/lib/server/routing.ts:
+
+   export type RouteContext =
+     | { kind: 'marketing' }
+     | { kind: 'app' }
+     | { kind: 'tenant'; subdomain: string };
+
+   Export a pure function parseHost(host: string, baseDomain: string,
+   pathname: string) that returns a RouteContext:
+   - Strip port from host (split on ":" and take first segment).
+   - Lowercase the host for case-insensitive comparison.
+   - If host equals baseDomain (exact match after port strip),
+     check the pathname: if it starts with a known app prefix
+     (/dashboard, /editor, /settings, /api), return { kind: 'app' }.
+     Otherwise return { kind: 'marketing' }.
+   - If host ends with "." + baseDomain, extract the subdomain label
+     (everything before the first dot of the suffix). Reject nested
+     subdomains (label must not contain a dot). Validate the label:
+     lowercase alphanumeric plus hyphens, 1-63 characters, must not
+     start or end with a hyphen. If valid, return
+     { kind: 'tenant', subdomain: label }. If invalid, return
+     { kind: 'marketing' } (fall through to 404 via normal routing).
+   - For local development where baseDomain is "localhost" (no TLD),
+     treat bare "localhost" as the base domain and
+     "alice.localhost" as a tenant subdomain.
+
+2. Write unit tests for parseHost in
+   src/lib/server/routing.test.ts:
+   - "hosted-resumes.com", "/" -> { kind: 'marketing' }
+   - "hosted-resumes.com", "/dashboard" -> { kind: 'app' }
+   - "hosted-resumes.com", "/editor/abc" -> { kind: 'app' }
+   - "hosted-resumes.com", "/api/resumes" -> { kind: 'app' }
+   - "hosted-resumes.com", "/pricing" -> { kind: 'marketing' }
+   - "alice.hosted-resumes.com", "/" -> { kind: 'tenant', subdomain: 'alice' }
+   - "my-resume.hosted-resumes.com", "/" -> { kind: 'tenant', subdomain: 'my-resume' }
+   - "-bad.hosted-resumes.com", "/" -> { kind: 'marketing' } (invalid)
+   - "ALICE.hosted-resumes.com", "/" -> { kind: 'tenant', subdomain: 'alice' } (lowercased)
+   - "localhost", "/" -> { kind: 'marketing' } (dev mode)
+   - "alice.localhost", "/" -> { kind: 'tenant', subdomain: 'alice' } (dev mode)
+   - "hosted-resumes.com:3000", "/" -> { kind: 'marketing' } (port stripped)
+   - "a.b.hosted-resumes.com", "/" -> { kind: 'marketing' } (nested sub rejected)
+
+3. Update src/app.d.ts to add the routing context to App.Locals.
+   Extend the existing interface (which already has `user` from
+   step 06):
+
+   import type { RouteContext } from '$lib/server/routing';
+
+   declare global {
+     namespace App {
+       interface Locals {
+         user: {
+           id: string;
+           email: string;
+           subdomain_slug: string;
+           tier: string;
+         } | null;
+         route: RouteContext;
+       }
+     }
+   }
+
+4. Update src/hooks.server.ts to compose the auth hook from step 06
+   with the new routing hook using SvelteKit's `sequence` helper:
+
+   import { sequence } from '@sveltejs/kit/hooks';
+   import type { Handle } from '@sveltejs/kit';
+   import { env } from '$env/dynamic/public';
+   import { parseHost } from '$lib/server/routing';
+   import { validateSession, setSessionCookie } from '$lib/server/auth';
+
+   const routing: Handle = async ({ event, resolve }) => {
+     const host = event.request.headers.get('host') ?? '';
+     const baseDomain = (env.PUBLIC_BASE_DOMAIN ?? 'localhost:5173')
+       .replace(/^https?:\/\//, '');
+     const route = parseHost(host, baseDomain, event.url.pathname);
+     event.locals.route = route;
+     return resolve(event);
+   };
+
+   const auth: Handle = async ({ event, resolve }) => {
+     // Existing auth logic from step 06 unchanged.
+     const token = event.cookies.get('session');
+     if (token) {
+       const result = await validateSession(token);
+       if (result) {
+         event.locals.user = result.user;
+         if (result.extended) {
+           setSessionCookie(event.cookies, token);
+         }
+       } else {
+         event.locals.user = null;
+       }
+     } else {
+       event.locals.user = null;
+     }
+     return resolve(event);
+   };
+
+   // Routing runs first so auth can inspect route context if needed.
+   export const handle = sequence(routing, auth);
+
+5. Confirm PUBLIC_BASE_DOMAIN is present in .env.example (added in
+   step 01 as "PUBLIC_BASE_DOMAIN=localhost:5173"). Document that
+   production should set it to "hosted-resumes.com" (no protocol,
+   no trailing slash).
+
+6. Add convenience guard functions in src/lib/server/routing.ts
+   for use in downstream +layout.server.ts files:
+
+   export function requireTenant(locals: App.Locals): string {
+     if (locals.route.kind !== 'tenant') {
+       throw error(404);
+     }
+     return locals.route.subdomain;
+   }
+
+   export function requireApp(locals: App.Locals): void {
+     if (locals.route.kind === 'tenant') {
+       throw error(404);
+     }
+   }
+
+   The (tenant) layout calls requireTenant to extract the subdomain
+   slug for database lookup. The (app) layout calls requireApp to
+   reject tenant requests that somehow hit app routes.
+
+7. Create minimal route group server layouts that use the guards:
+
+   src/routes/(tenant)/+layout.server.ts:
+   - Call requireTenant(locals), return { subdomain }.
+   - Step 14 will add the actual database lookup and theme rendering.
+
+   src/routes/(app)/+layout.server.ts:
+   - Call requireApp(locals) as a guard.
+   - Step 09 will add the auth guard and dashboard data loading.
+
+8. Add a comment block at the top of src/hooks.server.ts documenting
+   the three routing contexts and how they map to SvelteKit route
+   groups:
+   - (marketing): landing, pricing, public pages on bare domain
+   - (app): dashboard, editor, settings on bare domain (auth-gated)
+   - (tenant): subdomain-hosted resume pages
+
+9. Verify end-to-end: start dev server, confirm that requests to
+   localhost:5173/ hit the marketing route, localhost:5173/dashboard
+   hits the app route, and alice.localhost:5173/ hits the tenant
+   route. Check event.locals.route values via a temporary debug
+   endpoint or console.log in the hook.
+"""
+backup = "If host-header detection proves unreliable behind a reverse proxy (header stripping), fall back to reading X-Forwarded-Host with a configurable TRUSTED_PROXY_HEADER env var. parseHost checks X-Forwarded-Host first when the var is set, then falls back to Host. Alternatively, if SvelteKit's event.url.hostname (populated by adapter-node from the ORIGIN env var) proves more reliable than the raw Host header, use that instead of manual header parsing."
+
+[context]
+files = [
+  "src/hooks.server.ts",
+  "src/app.d.ts",
+  "src/lib/server/routing.ts",
+  "src/lib/server/routing.test.ts",
+  "src/lib/server/auth.ts",
+  "src/routes/(tenant)/+layout.server.ts",
+  "src/routes/(app)/+layout.server.ts",
+  ".env.example",
+]
+dependencies = ["@sveltejs/kit (sequence helper, built-in)"]

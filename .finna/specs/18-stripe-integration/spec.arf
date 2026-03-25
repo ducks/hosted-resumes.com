@@ -1,0 +1,245 @@
+order = 18
+what = "Implement Stripe checkout sessions, subscription management, and webhook handler to sync billing state to the users table"
+why = "Stripe integration is the revenue gate for the entire SaaS. Without it the tier column stays 'free' for everyone and premium features (unlimited resumes, all themes, PDF export, custom domains) cannot be unlocked. Centralizing all Stripe logic in a single server module and a single webhook endpoint keeps billing concerns out of UI code and makes subscription state the database's responsibility, not the client's."
+how = """
+Step-by-step implementation plan:
+
+1. Install the Stripe SDK:
+   - `npm install stripe`
+   - This is the only new runtime dependency. The official
+     `stripe` package provides typed access to the Stripe API
+     and includes webhook signature verification.
+
+2. Add environment variables to `.env.example`:
+   - STRIPE_SECRET_KEY=sk_test_xxx
+   - STRIPE_WEBHOOK_SECRET=whsec_xxx
+   - STRIPE_PRO_PRICE_ID=price_xxx
+   - STRIPE_BUSINESS_PRICE_ID=price_xxx
+   - PUBLIC_BASE_URL=http://localhost:5173
+   Document that STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET
+   must be set for billing to work. The price IDs correspond
+   to products created in the Stripe dashboard (or via the API
+   in a seed script). PUBLIC_BASE_URL is used to construct
+   checkout success/cancel redirect URLs.
+
+3. Ensure the users table has the required Stripe columns.
+   These columns should already exist from step 23
+   (subscription-migrations), but if not yet applied, the
+   schema in `src/lib/server/schema.ts` must include:
+   - stripe_customer_id: text, nullable, unique
+   - stripe_subscription_id: text, nullable
+   - subscription_status: text, nullable
+     (maps to Stripe subscription statuses: 'active',
+      'past_due', 'canceled', 'unpaid', etc.)
+   - tier: text, not null, default 'free'
+     (values: 'free', 'pro', 'business')
+   The tier column is the application-level gate. It is set
+   by the webhook handler based on subscription events, not
+   by the checkout flow directly.
+
+4. Create `src/lib/server/stripe.ts` with these exports:
+
+   a. stripe (client instance):
+      - `new Stripe(STRIPE_SECRET_KEY)` with
+        `apiVersion: '2024-12-18.acacia'` (or latest stable).
+      - Fail fast at import time if STRIPE_SECRET_KEY is not
+        set (throw with a clear message).
+
+   b. getOrCreateCustomer(userId: string, email: string):
+      Promise<string>
+      - Query users table for stripe_customer_id.
+      - If present, return it.
+      - If null, call `stripe.customers.create({ email,
+        metadata: { userId } })`.
+      - Update users.stripe_customer_id with the new ID.
+      - Return the customer ID.
+      - This is idempotent: concurrent calls for the same
+        user will not create duplicates because the first
+        write wins and subsequent calls find the stored ID.
+
+   c. createCheckoutSession(params: {
+        userId: string;
+        email: string;
+        priceId: string;
+        successUrl: string;
+        cancelUrl: string;
+      }): Promise<string>
+      - Call getOrCreateCustomer to ensure a Stripe customer
+        exists.
+      - Call `stripe.checkout.sessions.create({
+          customer: customerId,
+          mode: 'subscription',
+          line_items: [{ price: priceId, quantity: 1 }],
+          success_url: successUrl,
+          cancel_url: cancelUrl,
+          metadata: { userId },
+          subscription_data: { metadata: { userId } },
+        })`.
+      - Return session.url (the redirect URL).
+      - The metadata on both the session and the subscription
+        lets the webhook handler map events back to our user
+        without an extra lookup.
+
+   d. createBillingPortalSession(customerId: string,
+        returnUrl: string): Promise<string>
+      - Call `stripe.billingPortal.sessions.create({
+          customer: customerId,
+          return_url: returnUrl,
+        })`.
+      - Return session.url.
+      - This gives existing subscribers a self-service portal
+        for upgrading, downgrading, canceling, and updating
+        payment methods.
+
+   e. constructWebhookEvent(body: string, signature: string):
+      Stripe.Event
+      - Call `stripe.webhooks.constructEvent(body,
+        signature, STRIPE_WEBHOOK_SECRET)`.
+      - Throws on invalid signature. The caller (webhook
+        route) handles the error.
+
+   f. Helper: priceIdToTier(priceId: string): string
+      - Map STRIPE_PRO_PRICE_ID -> 'pro'
+      - Map STRIPE_BUSINESS_PRICE_ID -> 'business'
+      - Unknown -> 'free'
+      - Used by the webhook handler to derive the tier from
+        a subscription's price.
+
+5. Create `src/routes/api/webhooks/stripe/+server.ts`:
+
+   a. Export a POST handler. This endpoint must NOT use
+      SvelteKit's built-in JSON body parsing because Stripe
+      signature verification requires the raw request body.
+
+   b. Read the raw body: `await event.request.text()`.
+
+   c. Read the signature header:
+      `event.request.headers.get('stripe-signature')`.
+
+   d. Call `constructWebhookEvent(body, signature)`. If it
+      throws, return 400 with 'Invalid signature'.
+
+   e. Handle these event types:
+
+      - checkout.session.completed:
+        Extract metadata.userId from the session object.
+        The subscription is now active. Retrieve the full
+        subscription via `stripe.subscriptions.retrieve(
+        session.subscription)` to get the price ID.
+        Update the users row:
+          stripe_subscription_id = subscription.id
+          subscription_status = subscription.status
+          tier = priceIdToTier(price.id)
+
+      - customer.subscription.updated:
+        Fires on plan changes, renewals, payment failures.
+        Extract userId from subscription.metadata.
+        Look up the first item's price ID to determine tier.
+        Update the users row:
+          subscription_status = subscription.status
+          tier = priceIdToTier(price.id)
+        If status is 'past_due', keep the current tier
+        (grace period). If status is 'unpaid' or
+        'incomplete_expired', downgrade tier to 'free'.
+
+      - customer.subscription.deleted:
+        Subscription canceled and period ended.
+        Extract userId from subscription.metadata.
+        Update the users row:
+          stripe_subscription_id = null
+          subscription_status = 'canceled'
+          tier = 'free'
+
+      - invoice.payment_failed:
+        Optional: log or flag for monitoring. The
+        subscription.updated event with 'past_due' status
+        handles the actual state change.
+
+   f. For unrecognized event types, return 200 (acknowledge
+      receipt without processing).
+
+   g. Always return 200 for successfully processed events.
+      Stripe retries on non-2xx responses, so only return
+      4xx/5xx for genuine failures (bad signature, missing
+      data).
+
+6. Create a checkout API endpoint at
+   `src/routes/api/stripe/checkout/+server.ts`:
+
+   a. POST handler. Requires authentication (use
+      requireAuth pattern from existing API routes).
+
+   b. Accept JSON body: { priceId: string }.
+
+   c. Validate priceId is one of the two known price IDs.
+      Return 400 if not.
+
+   d. Call createCheckoutSession with the user's ID, email,
+      the price ID, and success/cancel URLs constructed from
+      PUBLIC_BASE_URL:
+        successUrl: `${PUBLIC_BASE_URL}/settings?checkout=success`
+        cancelUrl: `${PUBLIC_BASE_URL}/settings?checkout=canceled`
+
+   e. Return 200 with { url: sessionUrl }. The frontend
+      redirects the user to this URL.
+
+7. Create a billing portal API endpoint at
+   `src/routes/api/stripe/portal/+server.ts`:
+
+   a. POST handler. Requires authentication.
+
+   b. Read the user's stripe_customer_id from the database.
+      Return 400 if null (user has never subscribed).
+
+   c. Call createBillingPortalSession with the customer ID
+      and return URL (`${PUBLIC_BASE_URL}/settings`).
+
+   d. Return 200 with { url: portalUrl }.
+
+8. Write tests in `src/lib/server/stripe.test.ts`:
+
+   a. Unit test priceIdToTier mapping:
+      - Known pro price ID -> 'pro'
+      - Known business price ID -> 'business'
+      - Unknown price ID -> 'free'
+
+   b. Unit test getOrCreateCustomer:
+      - Mock db to return existing stripe_customer_id:
+        should return it without calling Stripe.
+      - Mock db to return null: should call
+        stripe.customers.create and update the row.
+
+   c. Integration test for webhook handler (use Stripe's
+      test helpers or construct mock events):
+      - checkout.session.completed: verify user tier updated
+      - subscription.updated with status change: verify
+        tier and status updated
+      - subscription.deleted: verify tier reset to 'free'
+      - Invalid signature: verify 400 response
+      - Unknown event type: verify 200 response
+
+9. Add a note to the Makefile or README about setting up
+   Stripe webhooks for local development:
+   - `stripe listen --forward-to localhost:5173/api/webhooks/stripe`
+   - This command from the Stripe CLI forwards test webhook
+     events to the local dev server and prints the webhook
+     signing secret to use as STRIPE_WEBHOOK_SECRET.
+"""
+backup = "If Stripe is unavailable or the team wants to defer payment integration, implement a manual tier-assignment endpoint (admin-only POST /api/admin/set-tier) that directly updates users.tier. This unblocks tier-enforcement (step 19) and settings page (step 20) development without a live Stripe account. The stripe.ts module can be stubbed to return mock checkout URLs that redirect back to the app with a simulated success query parameter."
+
+[context]
+files = [
+  "src/lib/server/stripe.ts",
+  "src/lib/server/schema.ts",
+  "src/lib/server/db.ts",
+  "src/lib/server/auth.ts",
+  "src/lib/server/queries/users.ts",
+  "src/routes/api/webhooks/stripe/+server.ts",
+  "src/routes/api/stripe/checkout/+server.ts",
+  "src/routes/api/stripe/portal/+server.ts",
+  "src/lib/server/stripe.test.ts",
+  "src/hooks.server.ts",
+  "src/app.d.ts",
+  ".env.example",
+]
+dependencies = ["stripe"]

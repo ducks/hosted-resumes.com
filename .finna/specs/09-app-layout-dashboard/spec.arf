@@ -1,0 +1,258 @@
+order = 9
+what = "Build authenticated app layout with auth guard and dashboard page showing the user's resumes list with create, edit, and delete actions"
+why = "The app layout is the auth boundary for all protected routes (dashboard, editor, settings). Without it, there is no gate preventing unauthenticated visitors from reaching user-facing features. The dashboard is the first screen a logged-in user sees - it must load their resumes from the database, display them in a scannable list, and provide clear entry points for creating a new resume, editing an existing one, or deleting one. This step bridges auth (step 06), routing (step 07), JOBL schema (step 05), and the resume CRUD API (step 10) by establishing the authenticated shell that all subsequent app routes render inside."
+how = """
+Step-by-step implementation plan:
+
+1. Create the (app) route group server layout at
+   src/routes/(app)/+layout.server.ts:
+
+   - Import requireApp from $lib/server/routing (created in
+     step 07) and call it to reject tenant-subdomain requests
+     that somehow reach app routes.
+   - Check event.locals.user. If null, redirect to /login with
+     a 303 status using SvelteKit's redirect() helper. This is
+     the auth guard - every child route of (app) inherits it.
+   - Return the user object (id, email, subdomain_slug, tier)
+     to the layout so the UI can display user info and
+     conditionally render tier-gated features.
+
+   Implementation:
+     import { redirect } from '@sveltejs/kit';
+     import { requireApp } from '$lib/server/routing';
+     import type { LayoutServerLoad } from './$types';
+
+     export const load: LayoutServerLoad = ({ locals }) => {
+       requireApp(locals);
+       if (!locals.user) {
+         throw redirect(303, '/login');
+       }
+       return { user: locals.user };
+     };
+
+2. Create the (app) layout component at
+   src/routes/(app)/+layout.svelte:
+
+   - Receive the user object from the layout server load via
+     the data prop ($page.data or export let data).
+   - Render a minimal app shell with:
+     a. A sidebar or top nav containing:
+        - Site name "hosted-resumes.com" linking to /dashboard
+        - Nav links: Dashboard (/dashboard), Settings (/settings)
+        - User display: email or subdomain_slug
+        - Log out button (POST to /api/auth/logout, then redirect
+          to / on success)
+     b. A <main> element with <slot /> for child pages.
+   - Use semantic HTML: <nav>, <main>, <aside> or <header>.
+   - Style with scoped CSS using the same CSS custom property
+     approach as the marketing layout (step 08). Consistent
+     palette: --color-bg, --color-text, --color-primary,
+     --color-muted, --color-border, --color-surface.
+   - Layout should be a simple top-nav + content area, not an
+     elaborate sidebar. Keep it minimal - this is a utility app,
+     not a design showcase.
+   - The log out button should use a <form> with method="POST"
+     and action="/api/auth/logout" for progressive enhancement
+     (works without JS). Use SvelteKit's enhance action for
+     seamless client-side behavior when JS is available.
+
+3. Create a resume query helper in
+   src/lib/server/queries/resumes.ts:
+
+   - listResumesByUser(userId: string): Promise<Resume[]>
+     Select id, data->'personalInfo'->>'name' as resume_name,
+     theme, is_published, updated_at from resumes where
+     user_id = userId, ordered by updated_at desc. This returns
+     a lightweight summary list, not the full JOBL data blob.
+
+   - deleteResume(resumeId: string, userId: string): Promise<void>
+     Delete from resumes where id = resumeId AND user_id = userId.
+     The AND user_id clause ensures row-level tenant isolation -
+     a user can only delete their own resumes.
+
+   - countResumesByUser(userId: string): Promise<number>
+     Select count(*) from resumes where user_id = userId. Used
+     to enforce tier limits (free tier = 1 resume max).
+
+   Use the drizzle query builder from $lib/server/db. Types
+   should be inferred from the drizzle schema, not hand-written.
+
+4. Create the dashboard page server load at
+   src/routes/(app)/dashboard/+page.server.ts:
+
+   - Import listResumesByUser and countResumesByUser from the
+     query helper.
+   - The user is guaranteed to exist (parent layout auth guard).
+     Access it via locals.user (not parent data, to avoid
+     waterfalling).
+   - Call listResumesByUser(locals.user.id) and return the list
+     as { resumes }.
+   - Also return the user's tier and resume count so the UI can
+     determine whether the "New resume" button should be enabled
+     or show an upgrade prompt.
+
+   Implementation:
+     import type { PageServerLoad } from './$types';
+     import {
+       listResumesByUser,
+       countResumesByUser
+     } from '$lib/server/queries/resumes';
+
+     export const load: PageServerLoad = async ({ locals }) => {
+       const resumes = await listResumesByUser(locals.user!.id);
+       const count = await countResumesByUser(locals.user!.id);
+       return {
+         resumes,
+         resumeCount: count,
+         tier: locals.user!.tier,
+       };
+     };
+
+5. Create the dashboard page component at
+   src/routes/(app)/dashboard/+page.svelte:
+
+   - Set the page title via <svelte:head>:
+     <title>Dashboard - hosted-resumes.com</title>
+
+   - Display a page heading: "Your resumes"
+
+   - Show a "New resume" button that:
+     a. If the user is on the free tier and already has 1 resume,
+        show a disabled state with text "Upgrade to Pro for
+        unlimited resumes" linking to /settings.
+     b. Otherwise, POST to /api/resumes (step 10 will implement
+        the endpoint) to create a new empty resume, then redirect
+        to /editor/[newResumeId]. For now, the button can link
+        to a placeholder or be wired up once step 10 is done.
+        Use a <form> with method="POST" and SvelteKit's enhance
+        for progressive enhancement.
+
+   - Render the resume list as a clean table or card grid:
+     Each resume row/card shows:
+     a. Resume name (extracted from JOBL personalInfo.name, or
+        "Untitled" if not set)
+     b. Theme name (classic, modern, minimal)
+     c. Published status (published / draft) with a visual
+        indicator (dot or label)
+     d. Last updated date (formatted as relative time or
+        YYYY-MM-DD)
+     e. Actions:
+        - "Edit" link -> /editor/[resumeId]
+        - "Delete" button -> confirm dialog, then DELETE
+          /api/resumes/[id]. Use a <form> with method="POST"
+          and SvelteKit form actions. Include a confirm step
+          (window.confirm) to prevent accidental deletion.
+        - "View" link -> opens the published resume URL
+          (subdomain_slug.hosted-resumes.com) in a new tab.
+          Only shown if is_published is true.
+
+   - If the resume list is empty, show an empty state:
+     "You have not created any resumes yet." with a prominent
+     "Create your first resume" CTA.
+
+   - Style with scoped CSS. Use a simple table layout on desktop,
+     card layout on mobile (< 768px). Keep the design utilitarian
+     - this is a dashboard, not a marketing page.
+
+6. Add a form action for resume deletion at
+   src/routes/(app)/dashboard/+page.server.ts:
+
+   Add SvelteKit form actions to handle the delete operation
+   server-side:
+
+     import { fail } from '@sveltejs/kit';
+     import { deleteResume } from '$lib/server/queries/resumes';
+     import type { Actions } from './$types';
+
+     export const actions: Actions = {
+       delete: async ({ request, locals }) => {
+         const form = await request.formData();
+         const resumeId = form.get('resumeId');
+         if (typeof resumeId !== 'string') {
+           return fail(400, { error: 'Missing resume ID' });
+         }
+         await deleteResume(resumeId, locals.user!.id);
+         return { deleted: true };
+       },
+     };
+
+   The delete form in the page component uses:
+     <form method="POST" action="?/delete" use:enhance>
+       <input type="hidden" name="resumeId" value={resume.id} />
+       <button type="submit"
+         on:click|preventDefault={(e) => {
+           if (confirm('Delete this resume?')) {
+             e.target.closest('form').requestSubmit();
+           }
+         }}>
+         Delete
+       </button>
+     </form>
+
+   This gives progressive enhancement: works without JS via
+   standard form submission, enhanced with client-side confirm
+   dialog and seamless page update when JS is available.
+
+7. Create a placeholder /login route if it does not exist:
+
+   src/routes/(marketing)/login/+page.svelte:
+   - Simple login form with email and password fields.
+   - POST to /api/auth/login on submit.
+   - On success, redirect to /dashboard.
+   - On error, display the error message inline.
+   - This may already be partially implemented by step 06.
+     If so, just verify the redirect target is /dashboard.
+
+   src/routes/(marketing)/register/+page.svelte:
+   - Simple registration form with email and password fields.
+   - POST to /api/auth/register on submit.
+   - On success, redirect to /dashboard.
+   - These pages live under (marketing) because they are
+     accessible without authentication.
+
+8. Write integration tests in
+   src/routes/(app)/dashboard/dashboard.test.ts:
+
+   - Test that the layout server load redirects to /login when
+     locals.user is null (303 redirect).
+   - Test that the layout server load returns user data when
+     locals.user is set.
+   - Test that the dashboard page server load returns resumes
+     for the authenticated user.
+   - Test the delete form action: verify it calls deleteResume
+     with the correct userId (tenant isolation).
+   - Test the delete form action: verify it returns fail(400)
+     when resumeId is missing.
+   Use vitest. Mock the database query helpers to isolate the
+   server load logic from the database layer.
+
+9. Verify end-to-end:
+   - Start the dev server.
+   - Visit localhost:5173/dashboard without a session cookie -
+     should redirect to /login.
+   - Log in via /api/auth/login, then visit /dashboard - should
+     show the authenticated app layout with the user's email in
+     the nav and an empty resume list.
+   - Confirm the app layout nav links work: Dashboard, Settings
+     (settings page is step 20, so it can 404 for now).
+   - Confirm the log out button destroys the session and
+     redirects to /.
+"""
+backup = "If SvelteKit form actions prove awkward for the delete flow (e.g., confirm dialog interaction), fall back to a client-side fetch() call to DELETE /api/resumes/[id] with an inline confirmation. The server-side action approach is preferred for progressive enhancement, but a fetch-based approach is acceptable if it simplifies the UX. If the query helper approach for listing resumes is premature (step 10 not yet implemented), stub the data with a hardcoded empty array and add a TODO comment - the page structure and auth guard are the priority for this step."
+
+[context]
+files = [
+  "src/routes/(app)/+layout.server.ts",
+  "src/routes/(app)/+layout.svelte",
+  "src/routes/(app)/dashboard/+page.server.ts",
+  "src/routes/(app)/dashboard/+page.svelte",
+  "src/lib/server/queries/resumes.ts",
+  "src/lib/server/routing.ts",
+  "src/lib/server/schema.ts",
+  "src/lib/server/db.ts",
+  "src/hooks.server.ts",
+  "src/app.d.ts",
+  "src/routes/(marketing)/login/+page.svelte",
+  "src/routes/(marketing)/register/+page.svelte",
+]
+dependencies = ["@sveltejs/kit (built-in)", "drizzle-orm"]

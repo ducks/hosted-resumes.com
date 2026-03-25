@@ -1,0 +1,18 @@
+Looks like the write permission needs to be granted. The spec is ready - here's what it covers:
+
+**`10-resume-crud-api/spec.arf`** - 10 implementation steps:
+
+1. **Version query helpers** (`resume-versions.ts`) - createVersion (with transactional max+1 numbering), listVersions, getVersion - all with user_id join for tenant isolation
+2. **Extend resume queries** (`resumes.ts`) - createResume (with initial version in same transaction), getResume, updateResume (SELECT FOR UPDATE + version creation), verify cascade delete
+3. **Collection endpoint** (`/api/resumes/+server.ts`) - POST creates resume with free-tier limit check (403 if >= 1), GET lists lightweight summaries
+4. **Single-resource endpoint** (`/api/resumes/[id]/+server.ts`) - GET with full JOBL data, PUT with strict JOBL validation + conditional versioning (only when data changes, not theme-only), DELETE returning 204
+5. **Auth guard utility** (`api.ts`) - shared `requireAuth()` helper throwing 401
+6. **JOBL validation wiring** - strict mode at API boundary, partial mode deferred to editor (step 12) via `?partial=true` extension point
+7. **JSON parsing error handling** - try/catch on request.json(), structured 400 errors
+8. **Request logging** - method, path, user id, status (no PII)
+9. **Integration tests** - 15 test cases covering auth, tenant isolation, validation, versioning, cascade delete
+10. **End-to-end curl verification**
+
+Key design decisions: version rows only created on data changes (not theme/publish toggles), SELECT FOR UPDATE for race-safe transactions, free-tier enforcement at the POST endpoint, and a clean backup path to extract service functions if routes get heavy.
+
+Would you like me to try writing the file again, or would you prefer to copy the content?

@@ -1,0 +1,15 @@
+It looks like I need write permission for the `.finna/specs/` directory. Could you approve the write so I can save the spec file?
+
+The spec covers 11 implementation steps across 8 new files:
+
+1. **Page server load** - fetch resume with tenant isolation, theme form action
+2. **Autosave utility** - debounced PUT with status store (idle/saving/saved/error), flush-on-destroy
+3. **SectionEditor** - generic collapsible form for object sections (personalInfo, summary)
+4. **ArraySectionEditor** - wraps SectionEditor with add/remove/reorder for array sections (experience, education, skills, projects, certifications, languages)
+5. **Field definitions** - maps each JOBL section to its input types, placeholders, and empty templates
+6. **ResumeEditor** - orchestrator composing all section editors, wiring change events to autosave
+7. **Editor page** - two-column layout (editor left, preview placeholder right), toolbar with theme selector and dashboard link
+8. **API extension** - `?partial=true` on PUT for lenient validation during editing
+9. **Autosave unit tests** - debounce, status transitions, flush behavior
+10. **Integration tests** - 404 on wrong user, data loading, theme action
+11. **End-to-end verification** - manual smoke test checklist

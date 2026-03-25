@@ -1,0 +1,100 @@
+order = 2
+what = "Create docker-compose.yml with PostgreSQL and MinIO for local development, and Makefile targets to manage service lifecycle"
+why = "The SvelteKit app needs PostgreSQL for data storage and S3-compatible object storage for asset uploads. A docker-compose setup provides reproducible, one-command infrastructure that matches production topology without requiring manual service installation. This unblocks the database-schema and s3-uploads steps."
+how = """
+Step-by-step implementation plan:
+
+1. Create docker-compose.yml in the project root with two services:
+
+   a. postgres:
+      - image: postgres:16-alpine (small footprint, LTS release)
+      - container_name: hosted-resumes-postgres
+      - environment:
+        - POSTGRES_USER=hosted_resumes
+        - POSTGRES_PASSWORD=password
+        - POSTGRES_DB=hosted_resumes
+      - ports: 5432:5432
+      - volumes: pgdata named volume mounted to /var/lib/postgresql/data
+        for persistence across restarts
+      - healthcheck: pg_isready -U hosted_resumes -d hosted_resumes
+        with interval 5s, timeout 5s, retries 5
+
+   b. minio:
+      - image: minio/minio:latest
+      - container_name: hosted-resumes-minio
+      - command: server /data --console-address ":9001"
+      - environment:
+        - MINIO_ROOT_USER=minioadmin
+        - MINIO_ROOT_PASSWORD=minioadmin
+      - ports:
+        - 9000:9000 (S3 API)
+        - 9001:9001 (MinIO web console)
+      - volumes: minio-data named volume mounted to /data
+
+   c. Define named volumes at the bottom:
+      - pgdata
+      - minio-data
+
+2. Create docker-compose.override.yml.example (optional reference
+   for users who want to customize ports or add pgAdmin). Document
+   that docker-compose.override.yml is gitignored.
+
+3. Add a createbucket init service to docker-compose.yml:
+   - image: minio/mc (MinIO client)
+   - depends_on: minio (service_healthy or service_started)
+   - entrypoint: >
+       /bin/sh -c "
+       sleep 2;
+       mc alias set local http://minio:9000 minioadmin minioadmin;
+       mc mb --ignore-existing local/resumes;
+       "
+   This ensures the default S3 bucket exists on first start,
+   matching the S3_BUCKET=resumes value from .env.example.
+
+4. Add to .gitignore (create if missing, append if exists):
+   - docker-compose.override.yml
+
+5. Add Makefile targets (append to existing Makefile from step 01):
+
+   - make services-up:
+       docker compose up -d
+     Starts all containers in detached mode.
+
+   - make services-down:
+       docker compose down
+     Stops and removes containers but preserves volumes.
+
+   - make services-destroy:
+       docker compose down -v
+     Stops containers and removes volumes (full reset).
+
+   - make services-logs:
+       docker compose logs -f
+     Tail logs from all services.
+
+   - make services-ps:
+       docker compose ps
+     Show running service status.
+
+   - make psql:
+       docker compose exec postgres psql -U hosted_resumes -d hosted_resumes
+     Open an interactive psql session against the dev database.
+
+6. Create .env from .env.example if it does not already exist.
+   The values in .env.example from step 01 already match the
+   docker-compose service configuration (same user, password,
+   ports, bucket name). No changes to .env.example are needed.
+
+7. Verify the setup works end-to-end:
+   - Run `make services-up` and confirm both services reach healthy
+     state via `make services-ps`.
+   - Run `make psql` and confirm connection to the database.
+   - Confirm MinIO console is accessible at http://localhost:9001.
+   - Confirm the "resumes" bucket was created by the init container.
+   - Run `make services-down` and verify clean shutdown.
+"""
+backup = "If Docker is not available on the dev machine, fall back to running PostgreSQL and MinIO natively via nix-shell (add minio and postgresql to shell.nix buildInputs) with wrapper scripts in scripts/dev-postgres.sh and scripts/dev-minio.sh that manage data directories under .dev-data/ (gitignored). The Makefile targets remain the same but call the shell scripts instead of docker compose."
+
+[context]
+files = [".finna/roadmap.arf", ".finna/specs/01-scaffold-sveltekit/spec.arf", "README.md", ".env.example", "Makefile", ".gitignore"]
+dependencies = ["docker", "docker-compose"]

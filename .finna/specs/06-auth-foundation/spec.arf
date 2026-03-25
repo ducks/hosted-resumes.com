@@ -1,0 +1,126 @@
+order = 6
+what = "Implement session-based authentication with registration, login, logout, password hashing, and session cookies wired into SvelteKit hooks"
+why = "The auth layer is the first user-facing server feature and a prerequisite for every protected route (dashboard, editor, settings, API endpoints). Choosing scrypt over bcrypt avoids a native C addon, keeping the dependency tree pure JS and simplifying the Nix shell and CI. Storing sessions in the database rather than JWTs gives us instant revocation, a clear audit surface, and no token-size bloat in cookies."
+how = """
+Step-by-step implementation plan:
+
+1. Install dependencies:
+   - No new runtime deps. Use Node built-in `node:crypto` for
+     scrypt password hashing and `crypto.randomBytes` for session
+     token generation. This avoids native addons (bcrypt) and keeps
+     the stack pure JS/TS.
+
+2. Add a `sessions` table to the Drizzle schema
+   (`src/lib/server/schema.ts`):
+   - id: uuid, primary key, default gen_random_uuid()
+   - user_id: uuid, not null, references users(id) on delete cascade
+   - token: text, not null, unique (indexed)
+   - expires_at: timestamp with time zone, not null
+   - created_at: timestamp with time zone, default now()
+   Run `npx drizzle-kit generate` to produce the migration, then
+   apply with `npx drizzle-kit push` (dev) or the migration runner.
+
+3. Create `src/lib/server/auth.ts` exporting these functions:
+
+   a. hashPassword(password: string): Promise<string>
+      - Use `crypto.scryptSync(password, salt, 64)` with a
+        `crypto.randomBytes(16)` salt. Store as
+        `salt_hex:hash_hex` in the users.password_hash column.
+
+   b. verifyPassword(password: string, stored: string): Promise<boolean>
+      - Split stored string on ":", re-derive hash with the
+        extracted salt, compare with `crypto.timingSafeEqual`.
+
+   c. createSession(userId: string): Promise<string>
+      - Generate a 32-byte random token via `crypto.randomBytes`.
+        Hex-encode it. Insert a row into `sessions` with
+        `expires_at = now + 30 days`. Return the token string.
+
+   d. validateSession(token: string): Promise<User | null>
+      - Look up the session row by token. If missing or
+        `expires_at < now()`, return null (and delete the row if
+        expired). Otherwise, join to `users` and return the user
+        object (id, email, subdomain_slug, tier). If the session
+        is within 15 days of expiry, extend it by another 30 days
+        (sliding window).
+
+   e. destroySession(token: string): Promise<void>
+      - Delete the session row matching the token.
+
+   f. setSessionCookie(cookies: Cookies, token: string): void
+      - Call `cookies.set('session', token, { ... })` with:
+        path: '/', httpOnly: true, secure: true (false in dev),
+        sameSite: 'lax', maxAge: 30 * 24 * 60 * 60.
+
+   g. clearSessionCookie(cookies: Cookies): void
+      - Call `cookies.delete('session', { path: '/' })`.
+
+4. Update `src/app.d.ts` to extend SvelteKit's `App.Locals`:
+   - Add `user: { id: string; email: string; subdomain_slug: string; tier: string } | null`
+     so every server load function and API endpoint can access the
+     current user from `event.locals.user`.
+
+5. Create `src/hooks.server.ts` with a `handle` function:
+   - Read the `session` cookie from `event.cookies.get('session')`.
+   - If present, call `validateSession(token)`. If it returns a
+     user, set `event.locals.user = user`. If validation extended
+     the session, refresh the cookie via `setSessionCookie`.
+   - If no cookie or invalid, set `event.locals.user = null`.
+   - Call `resolve(event)` and return the response.
+   - Note: host-header routing logic will be added in step 07;
+     this hook only handles auth for now.
+
+6. Create auth API routes:
+
+   a. `src/routes/api/auth/register/+server.ts` (POST):
+      - Accept JSON body: { email, password }.
+      - Validate: email format (basic regex), password length >= 8.
+      - Check for existing user by email; return 409 if exists.
+      - Hash password, insert user row, create session, set
+        session cookie, return 201 with { user: { id, email } }.
+
+   b. `src/routes/api/auth/login/+server.ts` (POST):
+      - Accept JSON body: { email, password }.
+      - Look up user by email; return 401 if not found.
+      - Verify password; return 401 if mismatch.
+      - Create session, set session cookie, return 200 with
+        { user: { id, email } }.
+
+   c. `src/routes/api/auth/logout/+server.ts` (POST):
+      - Read session cookie, call destroySession, clear cookie,
+        return 200.
+
+7. Add query helpers in `src/lib/server/queries/users.ts`:
+   - findUserByEmail(email: string): select from users where email
+   - createUser(email: string, passwordHash: string): insert into
+     users with default tier 'free' and auto-generated
+     subdomain_slug (derive from email local part, slugified,
+     with random suffix if collision)
+
+8. Write integration tests in `src/lib/server/auth.test.ts`:
+   - Test hashPassword / verifyPassword round-trip
+   - Test createSession / validateSession / destroySession cycle
+   - Test session expiry (mock time or use short TTL)
+   - Test sliding window extension
+   Prefer vitest since SvelteKit scaffolds it by default.
+
+9. Verify end-to-end: start dev server, POST to /api/auth/register
+   with curl, confirm session cookie is set, GET a protected
+   resource to confirm event.locals.user is populated.
+"""
+backup = "If scrypt performance is a concern under load, swap to argon2 via the argon2 npm package (pure WASM build, no native addon). The auth.ts interface stays identical - only the hash/verify internals change. If database sessions cause scaling issues later, migrate to signed JWTs with a short expiry and a refresh-token table, but that complexity is not justified at launch."
+
+[context]
+files = [
+  "src/lib/server/schema.ts",
+  "src/lib/server/db.ts",
+  "src/lib/server/auth.ts",
+  "src/lib/server/queries/users.ts",
+  "src/hooks.server.ts",
+  "src/app.d.ts",
+  "src/routes/api/auth/register/+server.ts",
+  "src/routes/api/auth/login/+server.ts",
+  "src/routes/api/auth/logout/+server.ts",
+  "src/lib/server/auth.test.ts",
+]
+dependencies = ["node:crypto (built-in)", "drizzle-orm", "pg"]

@@ -1,0 +1,71 @@
+order = 1
+what = "Scaffold SvelteKit project with TypeScript, install dependencies, and create dev environment files"
+why = "Establish the project foundation that all subsequent steps build on - SvelteKit for SSR (needed for subdomain routing and tenant pages), drizzle-orm for type-safe database access, and standard project tooling (shell.nix, Makefile) to match existing project conventions"
+how = """
+Step-by-step implementation plan:
+
+1. Run `npx sv create` in the project root to scaffold SvelteKit with
+   TypeScript. Use the minimal template, no demo app. Since files already
+   exist (README.md, .finna/), run the scaffolder in a temp directory and
+   move files into the project root, preserving existing files.
+
+2. Install core runtime dependencies:
+   - drizzle-orm (type-safe ORM, generates SQL from TS schemas)
+   - pg (PostgreSQL client for drizzle's pg driver)
+   - dotenv (load .env in dev; SvelteKit uses $env but drizzle
+     migrations need it standalone)
+
+3. Install dev dependencies:
+   - drizzle-kit (migration generation and push tooling)
+   - @types/pg (TypeScript types for pg driver)
+   - @sveltejs/adapter-node (deploy as standalone Node server,
+     required for host-header routing and SSR on a VPS)
+
+4. Configure svelte.config.js:
+   - Switch adapter from adapter-auto to adapter-node
+   - No other changes needed; TypeScript is default from scaffolder
+
+5. Configure vite.config.ts:
+   - Add server.host: true (allow access from Docker network and
+     LAN during dev)
+   - Add server.port: 5173 (pin to known port for docker-compose
+     and Caddy dev config)
+
+6. Create .env.example with placeholder values:
+   - DATABASE_URL=postgres://hosted_resumes:password@localhost:5432/hosted_resumes
+   - S3_ENDPOINT=http://localhost:9000
+   - S3_ACCESS_KEY=minioadmin
+   - S3_SECRET_KEY=minioadmin
+   - S3_BUCKET=resumes
+   - STRIPE_SECRET_KEY=sk_test_xxx
+   - STRIPE_WEBHOOK_SECRET=whsec_xxx
+   - PDF_SERVICE_URL=http://localhost:3001
+   - PUBLIC_BASE_DOMAIN=localhost:5173
+   - ORIGIN=http://localhost:5173
+
+7. Add .env to .gitignore (SvelteKit scaffolder likely already
+   includes this, verify and add if missing).
+
+8. Create shell.nix providing nodejs_22 and postgresql (for psql
+   client) in the dev environment. Use nixpkgs.nodejs_22 to match
+   the LTS channel used by adapter-node in production.
+
+9. Create Makefile with targets:
+   - make dev         - run `npm run dev`
+   - make build       - run `npm run build`
+   - make preview     - run `npm run preview`
+   - make db-generate - run `npx drizzle-kit generate`
+   - make db-push     - run `npx drizzle-kit push`
+   - make db-studio   - run `npx drizzle-kit studio`
+   - make clean       - remove node_modules, .svelte-kit, build
+   - make install     - run `npm ci`
+
+10. Verify the scaffold works: run `npm run check` and `npm run build`
+    to confirm TypeScript compilation and adapter-node output succeed
+    with zero errors.
+"""
+backup = "If sv create fails or conflicts with existing files, manually init by creating package.json, tsconfig.json, svelte.config.js, vite.config.ts, and src/routes/+page.svelte by hand, pulling structure from the SvelteKit docs starter template"
+
+[context]
+files = ["README.md", ".finna/roadmap.arf"]
+dependencies = ["@sveltejs/kit", "@sveltejs/adapter-node", "svelte", "vite", "typescript", "drizzle-orm", "drizzle-kit", "pg", "@types/pg"]

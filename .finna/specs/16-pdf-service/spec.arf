@@ -1,0 +1,165 @@
+order = 16
+what = "Create a stateless Rust microservice that accepts HTML via POST and returns PDF bytes using axum and SRG"
+why = "The architecture isolates HTML-to-PDF conversion into a dedicated Rust service so the Node.js SvelteKit app never needs a headless browser dependency. SRG (Static Resume Generator) already handles HTML-to-PDF rendering as a Rust library - this service wraps it behind a simple HTTP API. The service is stateless, meaning it can be horizontally scaled or restarted independently of the main app. Step 17 (pdf-export-endpoint) depends on this service being available at PDF_SERVICE_URL (http://localhost:3001 in dev)."
+how = """
+Step-by-step implementation plan:
+
+1. Create the pdf-service/ directory at the project root with a
+   standard Rust project layout:
+   - pdf-service/Cargo.toml
+   - pdf-service/src/main.rs
+
+2. Set up pdf-service/Cargo.toml:
+   - [package] name = "pdf-service", version = "0.1.0",
+     edition = "2021"
+   - Dependencies:
+     - axum = "0.8" (HTTP framework, async, tower-based)
+     - tokio = { version = "1", features = ["full"] }
+       (async runtime)
+     - srg = { git = "https://github.com/ducks/srg" }
+       (HTML-to-PDF via Static Resume Generator)
+     - tower-http = { version = "0.6", features = ["cors",
+       "trace"] } (CORS middleware for dev, request tracing)
+     - tracing = "0.1" (structured logging)
+     - tracing-subscriber = { version = "0.3",
+       features = ["env-filter"] } (log output with
+       RUST_LOG filtering)
+     - serde = { version = "1", features = ["derive"] }
+       (request/response serialization if needed)
+
+   Pin srg via git dependency initially. Once srg is published
+   to crates.io or a stable tag exists, switch to a version pin.
+   If srg exposes a library API (pub fn html_to_pdf or similar),
+   use it directly. If srg is CLI-only, wrap it via
+   std::process::Command as the backup plan describes.
+
+3. Implement src/main.rs with the following structure:
+
+   a. main() function:
+      - Initialize tracing_subscriber with EnvFilter defaulting
+        to "pdf_service=info,tower_http=info". This respects
+        RUST_LOG for verbose debugging.
+      - Read bind address from PDF_SERVICE_HOST env var,
+        defaulting to "0.0.0.0:3001". This matches the
+        PDF_SERVICE_URL=http://localhost:3001 in .env.example.
+      - Build the axum Router with routes and middleware.
+      - Bind with tokio::net::TcpListener and serve.
+      - Log "pdf-service listening on {addr}" at startup.
+
+   b. Router setup:
+      - GET /health -> health_check handler
+      - POST /render -> render_pdf handler
+      - Layer tower_http::trace::TraceLayer for request logging.
+      - Layer tower_http::cors::CorsLayer permissive in dev
+        (all origins). In production this service sits behind
+        the internal network and is not publicly exposed, so
+        CORS is a dev convenience only.
+
+   c. GET /health handler:
+      - Return 200 OK with JSON body: { "status": "ok" }
+      - This endpoint is used by docker-compose healthchecks,
+        the CI deploy workflow (step 22), and the SvelteKit app
+        to verify the PDF service is available before attempting
+        render calls.
+      - No authentication required.
+
+   d. POST /render handler:
+      - Accept the request body as raw bytes (axum::body::Bytes)
+        with Content-Type: text/html.
+      - Validate the body is non-empty; return 400 Bad Request
+        with a JSON error if empty.
+      - Set a reasonable max body size limit via
+        axum::extract::DefaultBodyLimit (e.g. 2 MB). Resume HTML
+        should be well under this, but it guards against
+        accidental abuse.
+      - Pass the HTML bytes to SRG's rendering function.
+        The exact API depends on SRG's public interface -
+        expected signature is something like:
+        srg::render_pdf(html: &str) -> Result<Vec<u8>, Error>
+      - On success, return 200 with Content-Type:
+        application/pdf and the raw PDF bytes as the response
+        body. Set Content-Disposition: inline so browsers can
+        display the PDF directly.
+      - On SRG error, return 500 Internal Server Error with a
+        JSON body: { "error": "pdf rendering failed",
+        "detail": error_message }. Log the full error at
+        error level via tracing.
+
+   e. Error handling:
+      - Define an AppError enum implementing
+        axum::response::IntoResponse for consistent JSON error
+        responses.
+      - Variants: BadRequest(String), InternalError(String).
+      - Each variant maps to the appropriate HTTP status code
+        and returns { "error": "...", "detail": "..." }.
+
+4. Add a .gitignore inside pdf-service/:
+   - /target
+
+5. Add Makefile targets to the root Makefile for the PDF service:
+   - make pdf-build:
+       cd pdf-service && cargo build --release
+   - make pdf-dev:
+       cd pdf-service && cargo run
+   - make pdf-check:
+       cd pdf-service && cargo check
+   - make pdf-test:
+       cd pdf-service && cargo test
+
+6. Update shell.nix to include rustc, cargo, and any system
+   libraries SRG requires (likely pkg-config and openssl-sys
+   at minimum; if SRG uses a headless browser internally, it
+   may need additional system deps - check SRG's README).
+
+7. Add the pdf-service to docker-compose.yml as an optional
+   service for dev convenience:
+   - Build from ./pdf-service using a multi-stage Dockerfile
+     (or just document running it natively via `make pdf-dev`
+     in a second terminal, which is simpler for dev).
+   - Only add the docker service if the team prefers it;
+     otherwise document the two-terminal dev workflow:
+     terminal 1: `make dev` (SvelteKit)
+     terminal 2: `make pdf-dev` (PDF service)
+
+8. Write tests in pdf-service/src/main.rs (or a tests/ dir):
+
+   a. Health check test:
+      - Send GET /health, assert 200 and body contains
+        { "status": "ok" }.
+
+   b. Render with valid HTML test:
+      - POST /render with a minimal HTML document
+        (e.g. "<html><body><h1>Test</h1></body></html>"),
+        assert 200 and Content-Type is application/pdf.
+      - Verify the response body starts with the PDF magic
+        bytes: %PDF-
+
+   c. Render with empty body test:
+      - POST /render with empty body, assert 400.
+
+   d. Use axum::test helpers (axum's Router can be converted
+      to a tower::Service for in-process testing without
+      binding to a port).
+
+9. Verify end-to-end: start the service with `make pdf-dev`,
+   then curl it:
+   - curl http://localhost:3001/health
+     -> { "status": "ok" }
+   - curl -X POST -H "Content-Type: text/html" \
+       -d "<html><body><h1>Hello</h1></body></html>" \
+       http://localhost:3001/render -o test.pdf
+     -> test.pdf is a valid PDF file
+"""
+backup = "If SRG does not expose a library API and is CLI-only, wrap it via std::process::Command: write the HTML to a temp file, invoke `srg render <tempfile> -o <outfile>`, read back the PDF bytes, and clean up temp files. This adds latency from process spawning but keeps the HTTP interface identical. If SRG itself proves too complex to integrate initially, use headless-chrome crate (Rust bindings for Chrome DevTools Protocol) as the PDF renderer - it takes HTML and produces PDF bytes directly, though it requires Chromium installed as a system dependency."
+
+[context]
+files = [
+  "pdf-service/Cargo.toml",
+  "pdf-service/src/main.rs",
+  "pdf-service/.gitignore",
+  "shell.nix",
+  "Makefile",
+  "docker-compose.yml",
+  ".env.example",
+]
+dependencies = ["axum", "tokio", "srg", "tower-http", "tracing", "tracing-subscriber", "serde"]

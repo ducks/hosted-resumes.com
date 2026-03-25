@@ -1,0 +1,14 @@
+It looks like the write permission is being blocked for the `.finna/specs/` directory. Could you approve the write permission? I'm trying to create the spec file at `.finna/specs/11-theme-components/spec.arf`.
+
+The spec covers 8 implementation steps:
+
+1. **Types** - `ThemeProps` and `ThemeMeta` interfaces in `src/lib/themes/types.ts`
+2. **Classic theme** - serif, single-column, free tier, traditional resume layout
+3. **Modern theme** - sans-serif, two-column CSS grid with accent color sidebar, pro tier
+4. **Minimal theme** - monospace accents, maximum whitespace, narrow measure, pro tier
+5. **Registry** - `themes` record, `getTheme()`, `getDefaultTheme()`, `getThemesForTier()` in `src/lib/themes/index.ts`
+6. **Shared helper** - optional `ContactLine.svelte` only if duplication warrants it
+7. **Verification** - test route with full and partial resume data, responsive checks, print preview
+8. **SSR compatibility** - no browser APIs, no lifecycle hooks, self-contained scoped styles for PDF export
+
+Backup plan: implement only Classic fully, stub Modern/Minimal with CSS custom property overrides to unblock downstream steps.
