@@ -1,0 +1,140 @@
+what = "SaaS platform for hosting JOBL resumes on personal subdomains with live preview, themes, and PDF export"
+why = "Provide a simple way for people to create, host, and share structured resumes using JOBL format with custom subdomains and professional themes"
+
+[[steps]]
+order = 1
+name = "scaffold-sveltekit"
+summary = "Initialize SvelteKit project with TypeScript, install core dependencies (svelte, vite, drizzle-orm, pg), configure svelte.config.js and vite.config.ts, create .env.example, shell.nix, and Makefile"
+depends_on = []
+
+[[steps]]
+order = 2
+name = "docker-compose-dev"
+summary = "Create docker-compose.yml with PostgreSQL and MinIO (S3-compatible) for local development, add make targets for starting/stopping services"
+depends_on = ["scaffold-sveltekit"]
+
+[[steps]]
+order = 3
+name = "database-schema"
+summary = "Write initial SQL migrations for users, resumes (JOBL as JSONB), resume_versions, and subscriptions tables with row-level tenant isolation via user_id foreign keys"
+depends_on = ["docker-compose-dev"]
+
+[[steps]]
+order = 4
+name = "db-client"
+summary = "Implement src/lib/server/db.ts with connection pooling, migration runner, and typed query helpers for users, resumes, and resume_versions"
+depends_on = ["database-schema"]
+
+[[steps]]
+order = 5
+name = "jobl-schema"
+summary = "Define JOBL TypeScript types in src/lib/jobl/schema.ts and validation logic in src/lib/jobl/validate.ts using zod or similar"
+depends_on = ["scaffold-sveltekit"]
+
+[[steps]]
+order = 6
+name = "auth-foundation"
+summary = "Implement src/lib/server/auth.ts with session-based authentication (registration, login, logout), password hashing, and session cookies; wire into hooks.server.ts"
+depends_on = ["db-client"]
+
+[[steps]]
+order = 7
+name = "host-header-routing"
+summary = "Implement host-header detection in src/hooks.server.ts to distinguish marketing site, app routes, and tenant subdomains; set event.locals with routing context"
+depends_on = ["auth-foundation"]
+
+[[steps]]
+order = 8
+name = "marketing-pages"
+summary = "Build marketing layout and landing page at src/routes/(marketing)/+page.svelte and pricing page at src/routes/(marketing)/pricing/+page.svelte"
+depends_on = ["host-header-routing"]
+
+[[steps]]
+order = 9
+name = "app-layout-dashboard"
+summary = "Build authenticated app layout at src/routes/(app)/+layout.server.ts with auth guard, and dashboard page showing user's resumes list with create/edit/delete actions"
+depends_on = ["host-header-routing", "jobl-schema"]
+
+[[steps]]
+order = 10
+name = "resume-crud-api"
+summary = "Implement REST endpoints in src/routes/api/resumes/ for creating, reading, updating, and deleting resumes; each save creates an immutable version row"
+depends_on = ["db-client", "jobl-schema", "auth-foundation"]
+
+[[steps]]
+order = 11
+name = "theme-components"
+summary = "Create three Svelte theme components (Classic, Modern, Minimal) in src/lib/themes/ that accept JOBL data as props and render a styled resume; build theme registry in src/lib/themes/index.ts"
+depends_on = ["jobl-schema"]
+
+[[steps]]
+order = 12
+name = "resume-editor"
+summary = "Build structured form editor at src/routes/(app)/editor/[resumeId]/ with SectionEditor components for each JOBL section, wired to resume CRUD API with autosave"
+depends_on = ["resume-crud-api", "theme-components"]
+
+[[steps]]
+order = 13
+name = "live-preview"
+summary = "Add LivePreview panel alongside the editor that renders the selected theme component client-side with current JOBL data, updating reactively on edits"
+depends_on = ["resume-editor"]
+
+[[steps]]
+order = 14
+name = "tenant-subdomain-pages"
+summary = "Implement src/routes/(tenant)/ layout and page that looks up user by subdomain, fetches their published resume, and SSR-renders the selected theme component"
+depends_on = ["host-header-routing", "theme-components", "db-client"]
+
+[[steps]]
+order = 15
+name = "s3-uploads"
+summary = "Implement src/lib/server/s3.ts client and src/routes/api/upload/+server.ts endpoint for profile photo and asset uploads to S3/MinIO with signed URLs"
+depends_on = ["auth-foundation"]
+
+[[steps]]
+order = 16
+name = "pdf-service"
+summary = "Create Rust microservice in pdf-service/ using axum and SRG that accepts HTML via POST and returns PDF bytes; add Cargo.toml, main.rs, health check endpoint"
+depends_on = []
+
+[[steps]]
+order = 17
+name = "pdf-export-endpoint"
+summary = "Implement src/routes/api/export/pdf/+server.ts that SSR-renders the user's resume theme to HTML, POSTs it to the Rust PDF service, and streams the PDF response back"
+depends_on = ["pdf-service", "tenant-subdomain-pages"]
+
+[[steps]]
+order = 18
+name = "stripe-integration"
+summary = "Implement src/lib/server/stripe.ts for creating checkout sessions and managing subscriptions; add webhook handler at src/routes/api/webhooks/stripe/+server.ts to sync subscription state to the database"
+depends_on = ["db-client", "auth-foundation"]
+
+[[steps]]
+order = 19
+name = "tier-enforcement"
+summary = "Add middleware in hooks.server.ts and page server loads that checks user.tier before allowing premium features (custom domain, extra themes, PDF export); gate UI elements accordingly"
+depends_on = ["stripe-integration", "resume-editor"]
+
+[[steps]]
+order = 20
+name = "settings-page"
+summary = "Build src/routes/(app)/settings/+page.svelte for managing profile, subdomain slug, subscription tier, and billing portal link"
+depends_on = ["stripe-integration", "app-layout-dashboard"]
+
+[[steps]]
+order = 21
+name = "wildcard-dns-caddy"
+summary = "Write Caddy configuration for wildcard DNS routing (*.hosted-resumes.com) proxying all subdomains to the single SvelteKit instance; document DNS setup"
+depends_on = ["tenant-subdomain-pages"]
+
+[[steps]]
+order = 22
+name = "ci-deploy-workflow"
+summary = "Create .github/workflows/deploy.yml with build, test, and deploy steps for both the SvelteKit app and the Rust PDF service"
+depends_on = ["scaffold-sveltekit", "pdf-service"]
+
+[[steps]]
+order = 23
+name = "subscription-migrations"
+summary = "Write migrations/002_subscriptions.sql adding tier column, stripe_customer_id, stripe_subscription_id, and subscription_status to users table"
+depends_on = ["database-schema"]
