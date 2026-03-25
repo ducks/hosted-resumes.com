@@ -1,0 +1,250 @@
+order = 21
+what = "Write Caddy configuration for wildcard DNS routing (*.hosted-resumes.com) proxying all subdomains to the single SvelteKit instance, and document the DNS setup required at the registrar"
+why = "The SvelteKit app already handles host-header routing internally (step 07) and renders tenant pages based on subdomain slugs (step 14), but nothing in front of the app terminates TLS or routes wildcard traffic to it. Caddy provides automatic HTTPS via ACME (including wildcard certs via DNS challenge), reverse proxying, and header forwarding with minimal configuration. Without this step, the app cannot be deployed to production on a real domain - subdomains will not resolve, TLS will not terminate, and the Host header the app depends on will never arrive."
+how = """
+Step-by-step implementation plan:
+
+1. Create deploy/Caddyfile in the project root. This file is the
+   production Caddy configuration. Use a single file rather than
+   a directory of snippets - the config is small enough that one
+   file stays readable.
+
+   The Caddyfile needs three site blocks:
+
+   a. Wildcard block for *.hosted-resumes.com:
+      - Matches all subdomain traffic (alice.hosted-resumes.com,
+        my-resume.hosted-resumes.com, etc.)
+      - Uses a wildcard TLS certificate obtained via DNS-01 ACME
+        challenge (required because wildcard certs cannot use
+        HTTP-01 challenge).
+      - Reverse proxies to the SvelteKit Node server at
+        localhost:3000 (adapter-node default port).
+      - Passes the Host header through so SvelteKit's
+        hooks.server.ts receives the original subdomain in the
+        Host header for routing (step 07).
+      - Sets X-Forwarded-For, X-Forwarded-Proto, and
+        X-Real-IP headers for the upstream app.
+
+   b. Bare domain block for hosted-resumes.com:
+      - Handles the marketing site, app routes (/dashboard,
+        /editor, /settings), and API endpoints.
+      - Uses a standard TLS certificate (Caddy's default ACME
+        HTTP-01 challenge works here since this is a single
+        hostname).
+      - Reverse proxies to the same SvelteKit instance at
+        localhost:3000.
+      - Same header forwarding as the wildcard block.
+
+   c. www redirect block for www.hosted-resumes.com:
+      - Permanent redirect (301) to https://hosted-resumes.com
+        to canonicalize the URL.
+
+2. Write the Caddyfile content:
+
+   # Wildcard subdomains - tenant resume pages
+   *.hosted-resumes.com {
+     tls {
+       dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+     }
+
+     reverse_proxy localhost:3000 {
+       header_up Host {host}
+       header_up X-Real-IP {remote_host}
+       header_up X-Forwarded-Proto {scheme}
+     }
+   }
+
+   # Bare domain - marketing site and app routes
+   hosted-resumes.com {
+     reverse_proxy localhost:3000 {
+       header_up Host {host}
+       header_up X-Real-IP {remote_host}
+       header_up X-Forwarded-Proto {scheme}
+     }
+   }
+
+   # www redirect to bare domain
+   www.hosted-resumes.com {
+     redir https://hosted-resumes.com{uri} permanent
+   }
+
+   Notes on the wildcard TLS block:
+   - DNS-01 challenge is mandatory for wildcard certificates.
+   - Caddy needs the caddy-dns/cloudflare plugin compiled in
+     (or whichever DNS provider is used). The Caddyfile uses
+     Cloudflare as the reference provider since the domain is
+     likely managed through Cloudflare DNS.
+   - CLOUDFLARE_API_TOKEN is read from the environment. It must
+     be a scoped API token with Zone:DNS:Edit permission for the
+     hosted-resumes.com zone.
+
+3. Create deploy/Caddyfile.dev for local development. This is a
+   simpler configuration that does not use TLS (SvelteKit dev
+   server handles its own HTTP):
+
+   :8080 {
+     reverse_proxy localhost:5173 {
+       header_up Host {host}
+       header_up X-Real-IP {remote_host}
+       header_up X-Forwarded-Proto {scheme}
+     }
+   }
+
+   This is optional - during development, direct access to
+   localhost:5173 with *.localhost subdomains (step 07) works
+   without Caddy. The dev Caddyfile exists for testing the
+   proxy behavior before deploying.
+
+4. Create deploy/caddy.env.example documenting the required
+   environment variables for Caddy in production:
+
+   CLOUDFLARE_API_TOKEN=your-scoped-api-token-here
+
+5. Document DNS setup in deploy/DNS_SETUP.md:
+
+   ## DNS Configuration
+
+   ### Provider: Cloudflare (recommended)
+
+   Add the following DNS records for hosted-resumes.com:
+
+   | Type  | Name | Content        | Proxy |
+   |-------|------|----------------|-------|
+   | A     | @    | <server-ip>    | off   |
+   | A     | *    | <server-ip>    | off   |
+   | A     | www  | <server-ip>    | off   |
+
+   The wildcard A record (*.hosted-resumes.com) routes all
+   subdomain traffic to the VPS. Caddy handles TLS termination,
+   so Cloudflare proxy should be OFF (DNS only / grey cloud) to
+   avoid double-proxying and certificate conflicts.
+
+   If using Cloudflare proxy (orange cloud) instead:
+   - Disable Caddy's TLS entirely (Cloudflare terminates TLS).
+   - Set Cloudflare SSL mode to "Full (Strict)".
+   - Caddy still needs the wildcard block but without the tls
+     directive.
+   - This is not recommended because Cloudflare's free tier does
+     not proxy wildcard subdomains - it requires the Advanced
+     Certificate Manager add-on ($10/month).
+
+   ### API Token for DNS-01 Challenge
+
+   Create a Cloudflare API token at:
+   https://dash.cloudflare.com/profile/api-tokens
+
+   Use the "Edit zone DNS" template with:
+   - Permissions: Zone > DNS > Edit
+   - Zone Resources: Include > Specific zone > hosted-resumes.com
+
+   Set the token as CLOUDFLARE_API_TOKEN in the Caddy process
+   environment (systemd EnvironmentFile, .env, etc.).
+
+   ### Alternative DNS Providers
+
+   If not using Cloudflare, replace the dns cloudflare plugin
+   with the appropriate caddy-dns plugin for your provider
+   (e.g., caddy-dns/route53, caddy-dns/digitalocean). The
+   Caddyfile tls block syntax is the same; only the plugin name
+   and env var change. See https://github.com/caddy-dns for
+   available plugins.
+
+   ### Verifying DNS
+
+   After setting records, verify propagation:
+
+     dig hosted-resumes.com +short
+     dig *.hosted-resumes.com +short
+     dig test.hosted-resumes.com +short
+
+   All three should return the server IP.
+
+6. Document Caddy installation in deploy/DNS_SETUP.md (append):
+
+   ## Caddy Installation
+
+   Caddy must be built with the DNS provider plugin. The
+   standard Caddy binary from apt/dnf does not include it.
+
+   ### Option A: xcaddy (recommended)
+
+     xcaddy build --with github.com/caddy-dns/cloudflare
+
+   This produces a custom caddy binary with the Cloudflare DNS
+   module compiled in.
+
+   ### Option B: Docker
+
+     FROM caddy:builder AS builder
+     RUN xcaddy build --with github.com/caddy-dns/cloudflare
+     FROM caddy:latest
+     COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+
+   ### Option C: Nix
+
+   Add caddy and xcaddy to shell.nix or the deploy nix
+   expression if deploying via NixOS.
+
+   ## Running Caddy
+
+   ### With systemd (matches burrow-systemd pattern)
+
+     [Unit]
+     Description=Caddy reverse proxy for hosted-resumes.com
+     After=network-online.target
+     Wants=network-online.target
+
+     [Service]
+     Type=notify
+     ExecStart=/usr/bin/caddy run \
+       --config /etc/caddy/Caddyfile \
+       --environ
+     ExecReload=/usr/bin/caddy reload \
+       --config /etc/caddy/Caddyfile
+     EnvironmentFile=/etc/caddy/caddy.env
+     Restart=on-failure
+     RestartSec=5
+     LimitNOFILE=1048576
+
+     [Install]
+     WantedBy=multi-user.target
+
+   Copy deploy/Caddyfile to /etc/caddy/Caddyfile and
+   deploy/caddy.env to /etc/caddy/caddy.env on the server.
+
+7. Add Makefile targets for validating the Caddyfile locally
+   (append to project Makefile):
+
+   caddy-validate:
+   	caddy validate --config deploy/Caddyfile
+
+   caddy-fmt:
+   	caddy fmt --overwrite deploy/Caddyfile
+
+8. Update .env.example to add ORIGIN=https://hosted-resumes.com
+   as a comment showing the production value. SvelteKit's
+   adapter-node uses ORIGIN to set the base URL for
+   event.url - this must match the protocol and domain Caddy
+   terminates. The existing value (http://localhost:5173) stays
+   as the default for development.
+
+9. Verify the configuration is syntactically valid by running
+   `caddy validate --config deploy/Caddyfile` (requires caddy
+   binary). If caddy is not installed locally, defer validation
+   to the deploy step - the Caddyfile syntax is simple enough
+   to verify by reading.
+"""
+backup = "If Caddy's DNS-01 challenge proves unreliable or the DNS provider lacks a caddy-dns plugin, switch to nginx with certbot for wildcard certificates. certbot supports DNS-01 via its own plugin ecosystem (certbot-dns-cloudflare, etc.) and can write certs that nginx reads. The nginx config is more verbose but functionally equivalent - a server block with server_name *.hosted-resumes.com and proxy_pass to localhost:3000. Alternatively, if wildcard certs are too complex initially, use Caddy with on-demand TLS (tls { on_demand }) which issues individual certificates per subdomain on first request, avoiding DNS-01 entirely at the cost of a slight delay on the first visit to each new subdomain."
+
+[context]
+files = [
+  "deploy/Caddyfile",
+  "deploy/Caddyfile.dev",
+  "deploy/caddy.env.example",
+  "deploy/DNS_SETUP.md",
+  "Makefile",
+  ".env.example",
+  "src/hooks.server.ts",
+  "src/lib/server/routing.ts",
+]
+dependencies = ["caddy (with caddy-dns/cloudflare plugin)", "xcaddy (for building custom caddy)"]

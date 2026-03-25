@@ -1,0 +1,128 @@
+order = 22
+what = "Create a GitHub Actions workflow that builds, tests, and deploys the SvelteKit app and Rust PDF service to the production VPS on push to main"
+why = "Without CI/CD, every deploy requires manual SSH, build, and restart steps on the VPS - error-prone and slow. This workflow automates the full pipeline: lint and test both codebases in parallel, build production artifacts, copy them to the server, and restart the systemd services. It also runs on pull requests (build and test only, no deploy) to catch breakage before merge. The workflow must handle two distinct build targets (Node.js SvelteKit app and Rust binary) with different toolchains, then coordinate deployment to the same VPS where Caddy (step 21) routes traffic."
+how = """
+Step-by-step implementation plan:
+
+1. Create .github/workflows/deploy.yml. Use a single workflow file
+   with multiple jobs rather than separate workflow files - the
+   SvelteKit app and PDF service share a deployment target and
+   should deploy atomically when both pass.
+
+2. Define the workflow trigger:
+   - on push to main: run full pipeline (build, test, deploy).
+   - on pull_request to main: run build and test jobs only,
+     skip the deploy job. This catches regressions without
+     deploying unreviewed code.
+   - on workflow_dispatch: allow manual deploys from the GitHub
+     Actions UI without pushing a commit.
+
+3. Define environment variables at the workflow level:
+   - NODE_VERSION: "22" (matches shell.nix and adapter-node)
+   - RUST_TOOLCHAIN: "stable"
+   - Secrets (configured in GitHub repo settings):
+     DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY
+
+4. Job 1: "test-sveltekit" - Build and test the SvelteKit app.
+
+   a. Checkout the repository.
+   b. Set up Node.js via actions/setup-node@v4 with
+      node-version: 22 and npm cache enabled.
+   c. Run `npm ci` for reproducible installs.
+   d. Run `npm run check` (svelte-check for TypeScript errors).
+   e. Run `npm run lint` if eslint is configured, skip otherwise.
+   f. Run `npm test` if vitest is configured. Allow exit 0 if
+      no tests exist yet.
+   g. Run `npm run build` to verify adapter-node production build.
+   h. Upload the build/ directory as artifact "sveltekit-build"
+      via actions/upload-artifact@v4.
+
+5. Job 2: "test-pdf-service" - Build and test the Rust PDF service.
+
+   a. Checkout the repository.
+   b. Set up Rust via dtolnay/rust-toolchain@stable.
+   c. Cache cargo registry and target/ via actions/cache@v4
+      keyed on pdf-service/Cargo.lock hash.
+   d. Run `cargo check --manifest-path pdf-service/Cargo.toml`.
+   e. Run `cargo test --manifest-path pdf-service/Cargo.toml`.
+   f. Run `cargo build --release --manifest-path pdf-service/Cargo.toml`.
+   g. Strip the binary: `strip pdf-service/target/release/pdf-service`.
+   h. Upload the binary as artifact "pdf-service-binary".
+
+6. Job 3: "deploy" - Deploy both artifacts to the VPS.
+
+   Conditions:
+   - needs: [test-sveltekit, test-pdf-service]
+   - if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+   a. Download both artifacts via actions/download-artifact@v4.
+
+   b. Set up SSH:
+      - Write DEPLOY_SSH_KEY to ~/.ssh/deploy_key, chmod 600.
+      - ssh-keyscan -H $DEPLOY_HOST >> ~/.ssh/known_hosts.
+
+   c. rsync build/, package.json, package-lock.json to
+      /opt/hosted-resumes/ on the VPS. Run `npm ci --omit=dev`
+      on the VPS via SSH to install production deps.
+
+   d. scp pdf-service binary to
+      /opt/hosted-resumes/pdf-service/pdf-service on the VPS.
+      chmod +x the binary on the remote.
+
+   e. Run database migrations via SSH:
+      cd /opt/hosted-resumes && npx drizzle-kit push.
+      If migrations fail, stop - do not restart services.
+
+   f. Restart systemd services via SSH:
+      sudo systemctl restart hosted-resumes
+      sudo systemctl restart hosted-resumes-pdf
+
+   g. Health check after 5 second wait:
+      - curl -sf http://localhost:3000 on VPS (SvelteKit).
+      - curl -sf http://localhost:3001/health on VPS (PDF service).
+      - On failure, print last 50 lines of journalctl for the
+        failing service and exit 1.
+
+7. Add concurrency control:
+   concurrency:
+     group: deploy-production
+     cancel-in-progress: false
+   Prevents simultaneous deploys; second deploy queues.
+
+8. Document required GitHub Actions secrets as comments at the
+   top of the workflow file:
+   - DEPLOY_HOST: VPS hostname or IP
+   - DEPLOY_USER: SSH user on the VPS
+   - DEPLOY_SSH_KEY: Private SSH key (ed25519 recommended)
+
+9. Document VPS prerequisites as comments:
+   - Node.js 22 installed (for npm ci on server)
+   - systemd services: hosted-resumes, hosted-resumes-pdf
+   - Deploy user has passwordless sudo for systemctl restart
+     of those two services
+   - /opt/hosted-resumes/ and /opt/hosted-resumes/pdf-service/
+     directories exist
+   - .env with production values exists on server
+"""
+backup = "If the VPS SSH deploy approach proves fragile or the project outgrows a single server, switch to a container-based deploy: build Docker images for both services in CI, push to GitHub Container Registry (ghcr.io), then SSH to the VPS and docker pull + docker compose up. This adds Docker as a production dependency but decouples the build environment from the server environment. Alternatively, if rsync + SSH is too manual, use a tool like kamal (from Rails) or Pulumi for declarative deploys - but this adds significant complexity for a single-server setup."
+
+[context]
+files = [
+  ".github/workflows/deploy.yml",
+  "package.json",
+  "pdf-service/Cargo.toml",
+  "pdf-service/src/main.rs",
+  "deploy/Caddyfile",
+  "Makefile",
+  "shell.nix",
+]
+dependencies = [
+  "actions/checkout@v4",
+  "actions/setup-node@v4",
+  "dtolnay/rust-toolchain@stable",
+  "actions/cache@v4",
+  "actions/upload-artifact@v4",
+  "actions/download-artifact@v4",
+  "rsync",
+  "ssh-keyscan",
+]

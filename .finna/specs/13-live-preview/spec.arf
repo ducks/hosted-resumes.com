@@ -1,0 +1,114 @@
+order = 13
+what = "Add a LivePreview panel to the resume editor that renders the selected theme component client-side with current JOBL data, updating reactively on edits"
+why = "The editor (step 12) left a placeholder in the right column. Without live preview, users must save and navigate to their subdomain to see how their resume looks - a slow, disorienting feedback loop. Rendering the theme component inline with reactive updates closes that loop instantly, making the editor feel responsive and trustworthy. This also validates that theme components work correctly in CSR mode before they are used for tenant SSR pages (step 14)."
+how = """
+Step-by-step implementation plan:
+
+1. Create `src/lib/components/LivePreview.svelte`. This component
+   accepts two props: `data` (JoblResume) and `theme` (string,
+   defaulting to 'classic'). Internally it calls `getTheme(theme)`
+   from the theme registry (step 11) to resolve the Svelte component,
+   then renders it via `<svelte:component this={themeComponent}
+   {data} />`. Wrap the rendered theme in a container div with
+   `class="live-preview"` that applies an iframe-like visual boundary
+   (border, background, overflow hidden, fixed max-width matching
+   typical resume proportions such as 8.5x11 aspect ratio).
+
+2. Add scaling and scroll behavior to the preview container. Use a
+   wrapper div with `transform: scale()` and `transform-origin: top
+   left` to fit the full-width resume layout into the preview panel.
+   Calculate the scale factor from the panel width divided by the
+   resume's natural width (e.g. 816px for US Letter at 96dpi). Add
+   `overflow-y: auto` on the outer container so the user can scroll
+   through longer resumes. Include a CSS transition on the transform
+   so scale changes (e.g. on window resize) feel smooth.
+
+3. Wire LivePreview into the editor page at
+   `src/routes/(app)/editor/[resumeId]/+page.svelte`. Replace the
+   existing preview placeholder div in the right column with
+   `<LivePreview {data} {theme} />`. The `data` binding should
+   reference the same reactive resume store that the SectionEditor
+   components write to, so any field change propagates immediately
+   to the preview without explicit event plumbing.
+
+4. Make theme switching update the preview reactively. The editor
+   toolbar already has a theme selector (step 12) that updates a
+   local `theme` variable and fires a form action to persist it.
+   Pass that same reactive `theme` variable to LivePreview. When the
+   user picks a different theme, the `<svelte:component>` block
+   re-renders with the new theme component. No additional fetch or
+   server round-trip is needed since all theme components are already
+   bundled client-side.
+
+5. Add a debounced preview update mechanism for performance. While
+   Svelte's reactivity handles most updates efficiently, rapid
+   typing in text fields (e.g. summary, descriptions) can trigger
+   excessive re-renders of the full theme component. Create a small
+   `src/lib/components/DebouncedPreview.svelte` wrapper that accepts
+   the same props but internally applies a 150ms debounce before
+   propagating data changes to the inner LivePreview. Use a simple
+   `$effect` (or reactive statement) with `setTimeout`/`clearTimeout`
+   rather than pulling in a library. If profiling shows Svelte's
+   built-in reactivity is fast enough without debounce, skip this
+   wrapper and render LivePreview directly.
+
+6. Handle empty and partial resume states gracefully. When the user
+   has just created a new resume, most fields are empty strings or
+   empty arrays. The LivePreview should still render without errors.
+   Pass data through `emptyResume()` defaults (from step 5) merged
+   with user input, so the theme component always receives a
+   structurally complete object. Add a subtle empty-state message
+   in the preview panel when personalInfo.name is blank, such as
+   "Start typing to see your resume preview" in muted text centered
+   in the panel.
+
+7. Add a collapse/expand toggle for the preview panel. Place a
+   small button (e.g. a chevron or "Hide preview" / "Show preview"
+   text) at the top of the right column or in the editor toolbar.
+   When collapsed, the editor expands to full width for focused
+   editing on smaller screens. Store the collapsed state in a local
+   variable (no need to persist it). Use a CSS transition on the
+   column width for a smooth collapse animation.
+
+8. Ensure responsive behavior. On viewports below 768px, stack the
+   editor and preview vertically rather than side-by-side. Place the
+   preview below the editor. On mobile, default to the preview panel
+   collapsed since the small screen makes side-by-side impractical.
+   The user can expand it to see a full-width preview below the
+   editor.
+
+9. Add a print-preview scale toggle. Include a small dropdown or
+   button group in the preview panel header with options:
+   "Fit to panel" (default, scales to panel width) and "100%"
+   (renders at actual size with horizontal scroll). This helps users
+   verify how the resume looks at real dimensions before exporting
+   to PDF.
+
+10. Write component tests for LivePreview:
+    - Renders Classic theme by default when no theme prop given
+    - Switches theme component when theme prop changes
+    - Renders without errors when given empty resume data
+    - Displays empty-state message when personalInfo.name is blank
+    - Applies correct scale factor based on container width
+
+11. Manual end-to-end verification:
+    - Open editor for an existing resume, confirm preview renders
+    - Edit a text field, confirm preview updates within 200ms
+    - Switch theme in dropdown, confirm preview re-renders
+    - Resize browser window, confirm responsive layout switch
+    - Collapse and expand preview panel
+    - Create a new empty resume, confirm empty-state message shows
+    - Fill in fields progressively, confirm preview builds up
+"""
+backup = "If dynamic <svelte:component> causes bundle size issues from importing all themes, lazy-load theme components with dynamic import() and show a brief loading skeleton while the component resolves. If Svelte reactivity proves too slow for large resumes, render the preview in an iframe using srcdoc with a serialized HTML snapshot updated on a 300ms debounce."
+
+[context]
+files = [
+  "src/lib/components/LivePreview.svelte",
+  "src/lib/components/DebouncedPreview.svelte",
+  "src/routes/(app)/editor/[resumeId]/+page.svelte",
+  "src/lib/themes/index.ts",
+  "src/lib/themes/types.ts",
+  "src/lib/jobl/schema.ts"
+]
+dependencies = []

@@ -1,0 +1,9 @@
+Looks like I need write permission to create the spec file. Could you approve the write to `.finna/specs/17-pdf-export-endpoint/spec.arf`? The spec covers:
+
+1. **render-resume.ts helper** - SSR-renders any theme component to self-contained HTML with print-optimized CSS and @page rules
+2. **POST /api/export/pdf endpoint** - auth guard, resume loading with tenant isolation, JSON body parsing (resumeId + optional theme override)
+3. **PDF service orchestration** - POSTs HTML to the Rust service, handles 502 for network/service failures
+4. **Response streaming** - passes ReadableStream directly (no buffering), Content-Disposition attachment with sanitized filename from resume data
+5. **Frontend trigger** - blob download via temporary anchor element, filename from Content-Disposition header
+6. **Tests** - render helper unit tests, 6 integration test cases covering auth, validation, tenant isolation, service failures, and happy path
+7. **Backup plan** - internal HTTP request to tenant page URL if direct Svelte SSR proves problematic

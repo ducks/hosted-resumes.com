@@ -1,0 +1,176 @@
+order = 8
+what = "Build the marketing layout, landing page, and pricing page as the public-facing front door for hosted-resumes.com"
+why = "The marketing pages are the first thing visitors see and must clearly communicate the value proposition (JOBL resumes on personal subdomains with themes and PDF export), display pricing tiers, and funnel users toward registration. This is the first route group to use the host-header routing context from step 07, validating that the (marketing) layout works correctly on the bare domain. These pages have no auth dependency and no database queries, making them a clean first integration test of the SvelteKit scaffold and routing layer."
+how = """
+Step-by-step implementation plan:
+
+1. Create the (marketing) route group layout at
+   src/routes/(marketing)/+layout.svelte:
+   - Include a simple, static header with the site name
+     "hosted-resumes.com" linked to "/" and two nav links:
+     "Pricing" (/pricing) and "Log in" (/login).
+   - Include a <slot /> for child page content.
+   - Include a footer with copyright, a link to the JOBL spec
+     GitHub repo, and a "Sign up" CTA link.
+   - Use semantic HTML: <header>, <main>, <footer>.
+   - Style with a <style> block using plain Svelte component
+     styles (scoped CSS). No Tailwind or CSS framework - keep it
+     minimal and hand-written. Use CSS custom properties for the
+     color palette so the marketing pages have a consistent look
+     without a framework dependency.
+   - Define CSS custom properties on a wrapper div:
+     --color-bg, --color-text, --color-primary, --color-muted,
+     --color-border. Choose a clean, professional palette (white
+     background, dark text, a single accent color).
+   - Max content width of 960px, centered with auto margins.
+   - Responsive: stack nav vertically below 640px.
+
+2. Create a +layout.server.ts for the (marketing) group at
+   src/routes/(marketing)/+layout.server.ts:
+   - This is a minimal guard. It does not need to reject any
+     requests (marketing pages are public) but it should pass
+     through the user object from locals so the layout can show
+     "Dashboard" instead of "Log in" for authenticated visitors:
+     export const load = ({ locals }) => {
+       return { user: locals.user };
+     };
+
+3. Create the landing page at
+   src/routes/(marketing)/+page.svelte:
+
+   Structure the page in these sections, top to bottom:
+
+   a. Hero section:
+      - Headline: "Your resume, your subdomain."
+      - Subheadline: "Create a structured JOBL resume. Pick a
+        theme. Publish it at yourname.hosted-resumes.com."
+      - Primary CTA button: "Get started free" linking to
+        /register.
+      - Secondary link: "See an example" (anchor to a preview
+        section or placeholder).
+
+   b. How it works (3-step):
+      - Step 1: "Write your resume" - brief text about the
+        structured JOBL editor.
+      - Step 2: "Choose a theme" - Classic, Modern, or Minimal.
+      - Step 3: "Publish on your subdomain" - live at
+        yourname.hosted-resumes.com.
+      - Use a simple horizontal row of 3 cards (stacked on
+        mobile). No icons or images yet - just numbered steps
+        with text.
+
+   c. Features section:
+      - Grid of 4-6 feature cards, each with a short title and
+        one-sentence description:
+        - "Live preview" - see changes as you type
+        - "Multiple themes" - Classic, Modern, Minimal
+        - "PDF export" - download a formatted PDF
+        - "Version history" - track every change
+        - "Personal subdomain" - yourname.hosted-resumes.com
+        - "Structured format" - powered by JOBL
+      - Two-column grid on desktop, single column on mobile.
+
+   d. Pricing preview:
+      - Show the three tiers (Free, Pro $5/mo, Business $15/mo)
+        in a compact row with the top feature of each tier.
+      - "See full pricing" link to /pricing.
+
+   e. Bottom CTA:
+      - "Ready to build your resume?" with a "Sign up free"
+        button linking to /register.
+
+   Style with scoped CSS in the component. Keep it minimal and
+   professional - no animations, no JavaScript interactivity
+   beyond links.
+
+4. Create the pricing page at
+   src/routes/(marketing)/pricing/+page.svelte:
+
+   a. Page title: "Pricing" with a subtitle: "Start free.
+      Upgrade when you need more."
+
+   b. Three pricing cards side by side (stacked on mobile):
+
+      Free ($0/mo):
+      - 1 resume
+      - Basic themes (Classic)
+      - Subdomain hosting
+      - JOBL editor
+      - CTA: "Get started free" -> /register
+
+      Pro ($5/mo):
+      - Unlimited resumes
+      - All themes (Classic, Modern, Minimal)
+      - PDF export
+      - Version history
+      - Priority support
+      - CTA: "Start with Pro" -> /register?plan=pro
+
+      Business ($15/mo):
+      - Everything in Pro
+      - Custom domain support
+      - Analytics
+      - White-label options
+      - CTA: "Start with Business" -> /register?plan=business
+
+   c. Highlight the Pro tier as "Most popular" with a subtle
+      visual accent (border color or background tint).
+
+   d. Below the cards, add a "Frequently asked questions"
+      section with 4-5 static Q&A pairs:
+      - "What is JOBL?" - brief explanation with link to spec.
+      - "Can I use a custom domain?" - yes, on Business tier.
+      - "How does PDF export work?" - rendered server-side.
+      - "Can I cancel anytime?" - yes, no contracts.
+      - "What happens if I downgrade?" - keep data, lose access
+        to premium features.
+
+   e. Bottom CTA: "Start building your resume today" with
+      a signup link.
+
+   Style with scoped CSS, same custom property palette as the
+   layout. Pricing cards should have equal height via CSS grid
+   or flexbox.
+
+5. Set the page <title> and meta description for SEO:
+
+   Landing page (+page.svelte or +page.ts):
+   - <svelte:head>
+       <title>hosted-resumes.com - your resume, your subdomain</title>
+       <meta name="description" content="Create a structured JOBL
+         resume, choose a theme, and publish it on your personal
+         subdomain." />
+     </svelte:head>
+
+   Pricing page:
+   - <svelte:head>
+       <title>Pricing - hosted-resumes.com</title>
+       <meta name="description" content="Free, Pro, and Business
+         plans for hosting your resume on hosted-resumes.com." />
+     </svelte:head>
+
+6. Verify the pages render correctly:
+   - Start the dev server (npm run dev).
+   - Visit localhost:5173/ - should show the landing page.
+   - Visit localhost:5173/pricing - should show the pricing page.
+   - Confirm that the (marketing) layout header and footer wrap
+     both pages.
+   - Confirm responsive behavior at mobile (< 640px) and desktop
+     widths.
+   - Confirm that the host-header routing from step 07 classifies
+     these requests as { kind: 'marketing' } (check via
+     console.log in hooks or layout server load).
+"""
+backup = "If scoped Svelte styles become unwieldy or the design needs rapid iteration, introduce Tailwind CSS via the SvelteKit Tailwind integration (npx svelte-add@latest tailwindcss). This swaps the hand-written CSS for utility classes but does not change any HTML structure or content. The layout, page structure, and content remain identical - only the styling approach changes."
+
+[context]
+files = [
+  "src/routes/(marketing)/+layout.svelte",
+  "src/routes/(marketing)/+layout.server.ts",
+  "src/routes/(marketing)/+page.svelte",
+  "src/routes/(marketing)/pricing/+page.svelte",
+  "src/hooks.server.ts",
+  "src/lib/server/routing.ts",
+  "src/app.d.ts",
+]
+dependencies = ["@sveltejs/kit (built-in)"]

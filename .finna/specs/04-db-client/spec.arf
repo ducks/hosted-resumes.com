@@ -1,0 +1,10 @@
+The spec is ready to write to `.finna/specs/04-db-client/spec.arf` but I need write permission for that path. Can you allow it?
+
+Key decisions in the spec:
+
+- **Schema as code**: drizzle table definitions in `src/lib/server/schema.ts` are the single source of truth for both TypeScript types and SQL migrations - replaces hand-written SQL from step 03
+- **Connection pooling**: singleton pg Pool (max 10) wrapped by drizzle, exported from `src/lib/server/db.ts`
+- **Migration runner**: `src/lib/server/migrate.ts` using drizzle's migrator, auto-runs in dev via `hooks.server.ts`, explicit `make db-migrate` in production
+- **Query helpers**: three modules under `src/lib/server/queries/` (users, resumes, resume-versions) with typed functions inferred from the drizzle schema
+- **Version numbering**: computed via `max(version_number) + 1` inside a transaction with the resume update
+- **Fallback**: raw pg Pool with hand-written SQL if drizzle causes issues

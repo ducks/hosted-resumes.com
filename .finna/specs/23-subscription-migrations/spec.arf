@@ -1,0 +1,120 @@
+order = 23
+what = "Write migrations/002_subscriptions.sql adding tier, stripe_customer_id, stripe_subscription_id, and subscription_status columns to the users table"
+why = "The Stripe integration (step 18) and tier enforcement (step 19) both read tier and Stripe metadata from the users table, but those columns do not exist in the initial schema from step 03. This migration bridges the gap: without it, the webhook handler cannot persist subscription state and the enforcement middleware has no tier column to check. Keeping this as a separate numbered migration rather than editing 001 preserves a clean upgrade path for any environment that already has the initial schema applied."
+how = """
+Step-by-step implementation plan:
+
+1. Create the migrations directory if it does not already
+   exist. The initial schema migration lives at
+   migrations/001_initial.sql (from step 03). This new file
+   sits alongside it at migrations/002_subscriptions.sql.
+
+2. Write the migration SQL with these ALTER TABLE statements
+   against the users table:
+
+   a. Add tier column:
+      ALTER TABLE users
+        ADD COLUMN tier text NOT NULL DEFAULT 'free';
+      Valid values are 'free', 'pro', 'business'. Use a CHECK
+      constraint to enforce:
+      ALTER TABLE users
+        ADD CONSTRAINT users_tier_check
+        CHECK (tier IN ('free', 'pro', 'business'));
+      Default is 'free' so existing rows and new signups
+      start on the free tier without requiring application
+      changes.
+
+   b. Add stripe_customer_id column:
+      ALTER TABLE users
+        ADD COLUMN stripe_customer_id text UNIQUE;
+      Nullable because users on the free tier who have never
+      interacted with Stripe will not have a customer ID.
+      UNIQUE constraint prevents duplicate customer records
+      and supports the idempotent getOrCreateCustomer pattern
+      in src/lib/server/stripe.ts.
+
+   c. Add stripe_subscription_id column:
+      ALTER TABLE users
+        ADD COLUMN stripe_subscription_id text;
+      Nullable. Set by the webhook handler on
+      checkout.session.completed, cleared on
+      customer.subscription.deleted. No unique constraint
+      because a user could theoretically cycle through
+      subscriptions over time and the old ID is cleared
+      before a new one is written.
+
+   d. Add subscription_status column:
+      ALTER TABLE users
+        ADD COLUMN subscription_status text;
+      Nullable. Stores the Stripe subscription status string
+      directly: 'active', 'past_due', 'canceled', 'unpaid',
+      'incomplete', 'incomplete_expired', 'trialing'. This
+      is kept as freeform text rather than an enum to avoid
+      a migration every time Stripe adds a new status value.
+      The tier column is the authoritative application-level
+      gate; subscription_status is for diagnostics and the
+      billing UI.
+
+3. The UNIQUE constraint on stripe_customer_id already
+   creates an implicit btree index in PostgreSQL, which is
+   sufficient for the equality lookups performed by
+   getOrCreateCustomer. No additional index is needed.
+
+4. Wrap the entire migration in a transaction:
+   BEGIN;
+   -- all ALTER TABLE statements
+   COMMIT;
+   This ensures the migration is atomic. If any statement
+   fails, none of the columns are added, avoiding a
+   partially-applied schema.
+
+5. Add a header comment to the migration file with the
+   migration number and a one-line description so the
+   migration runner and developers can identify it at a
+   glance.
+
+6. Update the Drizzle schema definition in
+   src/lib/server/schema.ts to include the four new columns
+   on the users table. This keeps the ORM type definitions
+   in sync with the database. The columns are:
+   - tier: text('tier').notNull().default('free')
+   - stripe_customer_id: text('stripe_customer_id').unique()
+   - stripe_subscription_id: text('stripe_subscription_id')
+   - subscription_status: text('subscription_status')
+
+7. Regenerate Drizzle types if using drizzle-kit:
+   npx drizzle-kit generate
+   Verify the generated migration matches the hand-written
+   SQL. If using push-based development, run:
+   npx drizzle-kit push
+
+8. Verify the migration applies cleanly against the dev
+   database:
+   - docker compose up -d (ensure PostgreSQL is running)
+   - Apply migration via the migration runner or psql:
+     psql $DATABASE_URL -f migrations/002_subscriptions.sql
+   - Confirm columns exist with \d users in psql
+   - Confirm CHECK constraint rejects tier='invalid'
+   - Confirm UNIQUE constraint rejects duplicate
+     stripe_customer_id values
+   - Confirm tier defaults to 'free' when omitted
+
+9. Document the rollback SQL (not applied automatically,
+   but useful for emergencies):
+   ALTER TABLE users DROP CONSTRAINT IF EXISTS users_tier_check;
+   ALTER TABLE users DROP COLUMN IF EXISTS subscription_status;
+   ALTER TABLE users DROP COLUMN IF EXISTS stripe_subscription_id;
+   ALTER TABLE users DROP COLUMN IF EXISTS stripe_customer_id;
+   ALTER TABLE users DROP COLUMN IF EXISTS tier;
+"""
+backup = "If the project uses Drizzle push-based migrations instead of hand-written SQL files, skip the raw SQL file and add the columns directly to the Drizzle schema in src/lib/server/schema.ts, then run npx drizzle-kit push to apply. The column definitions, constraints, and defaults are identical either way. If ALTER TABLE with NOT NULL DEFAULT is problematic on a large production table, split into two steps: first add the column as nullable, backfill with UPDATE, then set NOT NULL."
+
+[context]
+files = [
+  "migrations/001_initial.sql",
+  "migrations/002_subscriptions.sql",
+  "src/lib/server/schema.ts",
+  "src/lib/server/db.ts",
+  "src/lib/server/stripe.ts",
+]
+dependencies = ["drizzle-orm", "drizzle-kit", "pg"]

@@ -1,0 +1,143 @@
+order = 15
+what = "Implement S3 client module and upload API endpoint for profile photos and resume assets with signed URLs"
+why = "Resumes need profile photos and potentially other binary assets (logos, certificates). The architecture decision is S3 for binary assets only, with PostgreSQL as the single source of truth for structured data. This step provides the upload pipeline: authenticated users POST files to the API, which validates and stores them in S3/MinIO, returning a public URL the editor can embed in JOBL data. Signed upload URLs are not needed at v0 since all uploads flow through the server endpoint, but signed read URLs keep the bucket private and let us control access per-tenant."
+how = """
+Step-by-step implementation plan:
+
+1. Install the @aws-sdk/client-s3 and @aws-sdk/s3-request-presigner
+   packages. The AWS SDK v3 is modular (only pull in S3 client, not
+   the full SDK) and works with any S3-compatible service including
+   MinIO. No other runtime dependencies needed.
+
+2. Create src/lib/server/s3.ts exporting an S3 client and helper
+   functions:
+
+   a. Instantiate S3Client using environment variables:
+      - S3_ENDPOINT (e.g. http://localhost:9000 for MinIO)
+      - S3_ACCESS_KEY
+      - S3_SECRET_KEY
+      - S3_BUCKET
+      - S3_REGION (default "us-east-1", required by SDK but
+        ignored by MinIO)
+      Use $env/static/private for SvelteKit env access. Set
+      forcePathStyle: true (required for MinIO and most
+      self-hosted S3-compatible stores).
+
+   b. uploadFile(key: string, body: Buffer, contentType: string):
+      Promise<void>
+      - Calls PutObjectCommand with Bucket, Key, Body, ContentType.
+      - Key format: "{user_id}/{uuid}.{ext}" to namespace uploads
+        per user and avoid collisions.
+      - Throws on SDK errors; caller handles response.
+
+   c. deleteFile(key: string): Promise<void>
+      - Calls DeleteObjectCommand. Used when a user replaces their
+        profile photo or deletes their account.
+
+   d. getSignedUrl(key: string, expiresIn?: number):
+      Promise<string>
+      - Uses @aws-sdk/s3-request-presigner getSignedUrl with a
+        GetObjectCommand. Default expiry: 3600 seconds (1 hour).
+      - Returns the signed URL string for embedding in responses
+        or JOBL data.
+
+   e. getPublicUrl(key: string): string
+      - Returns a constructed URL: "{S3_ENDPOINT}/{S3_BUCKET}/{key}"
+      - Only use this if the bucket has a public read policy.
+        Default to getSignedUrl for private buckets.
+
+3. Create src/routes/api/upload/+server.ts with a POST handler:
+
+   a. Auth guard: check event.locals.user; return 401 if null.
+      Import the requireAuth helper from the shared api utility
+      (step 10).
+
+   b. Parse the multipart form data from the request:
+      - Use the Web API: `const formData = await request.formData()`
+      - Extract the file: `const file = formData.get('file')`
+      - Validate it is a File instance (not a string).
+
+   c. Validate the upload:
+      - Allowed MIME types: image/jpeg, image/png, image/webp,
+        image/gif. Reject anything else with 415 Unsupported
+        Media Type.
+      - Max file size: 2 MB. Check file.size before reading the
+        buffer. Return 413 Payload Too Large if exceeded.
+      - Sanitize the original filename for logging but do not use
+        it as the S3 key (generate a UUID instead).
+
+   d. Generate the S3 object key:
+      - Format: "{user.id}/{crypto.randomUUID()}.{ext}"
+      - Derive ext from the MIME type (jpeg, png, webp, gif).
+        Do not trust the file extension from the client.
+
+   e. Read the file into a Buffer:
+      `Buffer.from(await file.arrayBuffer())`
+
+   f. Call uploadFile(key, buffer, file.type).
+
+   g. Generate a signed read URL via getSignedUrl(key).
+
+   h. Return 201 with JSON body:
+      { key, url, contentType: file.type, size: file.size }
+      The "key" is stored in the JOBL data so the frontend can
+      request fresh signed URLs later. The "url" is the
+      immediately-usable signed URL for the editor preview.
+
+4. Add a GET handler to src/routes/api/upload/+server.ts for
+   refreshing signed URLs:
+
+   a. Auth guard.
+   b. Accept query param: ?key=user_id/uuid.ext
+   c. Verify the key starts with the authenticated user's ID
+      (tenant isolation - users cannot generate URLs for other
+      users' files).
+   d. Return 200 with { url: signedUrl, expiresIn: 3600 }.
+
+5. Add request size limit in hooks.server.ts or the upload route:
+   - SvelteKit does not enforce a global body size limit by
+     default. The 2 MB check in step 3c handles this at the
+     application layer after parsing.
+   - If using adapter-node behind Caddy/nginx, also set the
+     proxy body limit to 5 MB (buffer for multipart overhead)
+     to reject oversized requests at the edge.
+
+6. Add a bucket lifecycle policy for dev convenience (optional):
+   - In the docker-compose createbucket init container, add a
+     command to set the bucket policy to public-read for local
+     dev so getPublicUrl works without signing. Production
+     keeps the bucket private.
+
+7. Write unit tests in src/lib/server/s3.test.ts:
+   - Test key generation format (user_id/uuid.ext)
+   - Test MIME type validation (allow list, reject others)
+   - Test file size validation (under limit, at limit, over limit)
+   - Mock S3Client for upload/delete/presign calls
+   - Test tenant isolation on signed URL refresh (key prefix check)
+
+8. Write integration tests for the upload endpoint:
+   - POST with valid image returns 201 with key and url
+   - POST without auth returns 401
+   - POST with oversized file returns 413
+   - POST with disallowed MIME type returns 415
+   - POST with no file returns 400
+   - GET signed URL with own key returns 200
+   - GET signed URL with another user's key returns 403
+
+9. Verify end-to-end: start dev server and MinIO, upload a JPEG
+   via curl with multipart form, confirm the file appears in
+   MinIO console, confirm the returned signed URL loads the
+   image in a browser.
+"""
+backup = "If @aws-sdk/client-s3 proves too heavy or has compatibility issues with the bundler, use the lighter minio-js package (official MinIO client) which also speaks S3 protocol. The function signatures in s3.ts stay the same - only the internal client instantiation and command calls change. If signed URLs add unwanted complexity at v0, make the bucket public-read and use getPublicUrl exclusively, adding signed URLs in a later hardening pass."
+
+[context]
+files = [
+  "src/lib/server/s3.ts",
+  "src/routes/api/upload/+server.ts",
+  "src/lib/server/s3.test.ts",
+  "src/hooks.server.ts",
+  ".env.example",
+  "docker-compose.yml",
+]
+dependencies = ["@aws-sdk/client-s3", "@aws-sdk/s3-request-presigner"]

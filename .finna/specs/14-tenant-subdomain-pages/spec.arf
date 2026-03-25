@@ -1,0 +1,203 @@
+order = 14
+what = "Implement the (tenant) route group that resolves a subdomain to a user, loads their published resume, and SSR-renders the matching theme component as the public-facing hosted page"
+why = "This is the core product delivery surface - the page visitors see when they navigate to alice.hosted-resumes.com. Without it, users have no way to share their resume publicly. The host-header routing (step 07) already classifies tenant requests and exposes the subdomain slug via event.locals.route, the database layer (step 04) provides query helpers for user and resume lookups, and the theme components (step 11) are SSR-compatible Svelte components that accept JOBL data as props. This step wires those three pieces together into the final rendered page. It must handle missing users, unpublished resumes, and theme resolution gracefully, returning appropriate HTTP status codes rather than broken pages."
+how = """
+Step-by-step implementation plan:
+
+1. Add a database query helper in src/lib/server/queries/users.ts:
+
+   export async function findUserBySubdomain(
+     subdomain: string
+   ): Promise<User | null>
+
+   This runs a SELECT against the users table WHERE
+   subdomain_slug = $1. Return the full user row (id, email,
+   subdomain_slug, tier) or null if no match. This query is
+   the entry point for all tenant page loads - subdomain slug
+   is the lookup key, not user id.
+
+2. Add a database query helper in
+   src/lib/server/queries/resumes.ts:
+
+   export async function getPublishedResume(
+     userId: string
+   ): Promise<Resume | null>
+
+   This runs a SELECT against the resumes table WHERE
+   user_id = $1 AND is_published = true ORDER BY updated_at
+   DESC LIMIT 1. Return the full resume row (id, user_id,
+   data, theme, is_published, updated_at) or null. Only one
+   published resume is returned even if multiple exist - most
+   recently updated wins. This keeps the tenant page
+   deterministic without requiring a "primary resume" flag.
+
+3. Implement src/routes/(tenant)/+layout.server.ts:
+
+   import { requireTenant } from '$lib/server/routing';
+   import { findUserBySubdomain }
+     from '$lib/server/queries/users';
+   import { error } from '@sveltejs/kit';
+   import type { LayoutServerLoad } from './$types';
+
+   export const load: LayoutServerLoad = async ({ locals }) => {
+     const subdomain = requireTenant(locals);
+
+     const user = await findUserBySubdomain(subdomain);
+     if (!user) {
+       throw error(404, 'User not found');
+     }
+
+     return { tenantUser: user };
+   };
+
+   The layout resolves the subdomain to a user row and passes
+   it downstream. If no user owns this subdomain, return 404.
+   The layout does NOT load the resume - that stays in the
+   page load so that future child routes under (tenant)/
+   (e.g., a /projects or /contact page) can load different
+   data while reusing the user lookup.
+
+4. Implement src/routes/(tenant)/+page.server.ts:
+
+   import { getPublishedResume }
+     from '$lib/server/queries/resumes';
+   import { error } from '@sveltejs/kit';
+   import type { PageServerLoad } from './$types';
+
+   export const load: PageServerLoad = async ({ parent }) => {
+     const { tenantUser } = await parent();
+
+     const resume = await getPublishedResume(tenantUser.id);
+     if (!resume) {
+       throw error(404, 'No published resume');
+     }
+
+     return {
+       resume: {
+         data: resume.data,
+         theme: resume.theme,
+       },
+     };
+   };
+
+   The page load fetches the published resume for this tenant.
+   If the user has no published resume, return 404. Only pass
+   data and theme to the client - no internal fields like
+   user_id or is_published. The JOBL data object is the full
+   resume structure stored as JSONB.
+
+5. Implement src/routes/(tenant)/+page.svelte:
+
+   <script lang="ts">
+     import type { PageData } from './$types';
+     import { getTheme, getDefaultTheme } from '$lib/themes';
+
+     export let data: PageData;
+
+     const ThemeComponent =
+       getTheme(data.resume.theme) ?? getDefaultTheme();
+   </script>
+
+   <svelte:head>
+     <title>
+       {data.resume.data.personalInfo?.name ?? 'Resume'}
+     </title>
+     {#if data.resume.data.personalInfo?.headline}
+       <meta
+         name="description"
+         content={data.resume.data.personalInfo.headline}
+       />
+     {/if}
+     <meta name="robots" content="index, follow" />
+   </svelte:head>
+
+   <svelte:component
+     this={ThemeComponent}
+     data={data.resume.data}
+   />
+
+   The page dynamically resolves the theme component from the
+   registry (step 11) using the resume's stored theme name,
+   then renders it with the JOBL data. Falls back to the
+   default theme if the stored theme name is invalid. SEO
+   metadata is extracted from the JOBL personalInfo section
+   so shared links render meaningful previews in social media
+   and search results.
+
+6. Implement src/routes/(tenant)/+layout.svelte:
+
+   <script lang="ts">
+     import type { LayoutData } from './$types';
+     export let data: LayoutData;
+   </script>
+
+   <slot />
+
+   The tenant layout is intentionally minimal - no nav bar, no
+   app chrome. The resume IS the page. This keeps the hosted
+   resume clean and professional. A subtle footer attribution
+   ("Hosted on hosted-resumes.com") can be added later but is
+   not part of this step.
+
+7. Add an error page at src/routes/(tenant)/+error.svelte:
+
+   <script lang="ts">
+     import { page } from '$app/stores';
+   </script>
+
+   <div class="tenant-error">
+     <h1>{$page.status}</h1>
+     {#if $page.status === 404}
+       <p>This resume could not be found.</p>
+     {:else}
+       <p>Something went wrong.</p>
+     {/if}
+   </div>
+
+   This handles both "user not found" (subdomain not claimed)
+   and "no published resume" (user exists but has not
+   published). The error page is styled simply and does not
+   expose internal details.
+
+8. Set appropriate cache headers in the page server load.
+   Published resumes are relatively static, so add a short
+   cache duration to reduce database load under traffic.
+   In +page.server.ts, call setHeaders after loading:
+
+   setHeaders({
+     'Cache-Control': 'public, max-age=60, s-maxage=300'
+   });
+
+   This gives browsers a 1-minute cache and CDN/proxies a
+   5-minute cache. Users who update their resume see changes
+   within 5 minutes on the public page.
+
+9. Verify end-to-end by manually testing the full flow:
+   - Seed a test user with subdomain_slug "alice" and a
+     published resume with theme "classic" and valid JOBL data.
+   - Navigate to alice.localhost:5173/ in the browser.
+   - Confirm the Classic theme renders with the resume data.
+   - Navigate to nonexistent.localhost:5173/ and confirm 404.
+   - Set is_published = false and confirm 404.
+   - Check View Source to confirm SSR - the full resume HTML
+     should be present in the initial response.
+   - Check response headers for Cache-Control values.
+"""
+backup = "If dynamically resolving theme components via svelte:component causes SSR issues (e.g., the component not being included in the server bundle), switch to conditional rendering: import all three theme components statically and use an {#if}/{:else if} block to select based on theme name. This is less elegant but guarantees all components are in the bundle. If the parent() call in the page load creates a waterfall that noticeably slows response time, collapse the layout and page loads into a single page load that does both the user lookup and resume fetch in one function, at the cost of less route composability."
+
+[context]
+files = [
+  "src/routes/(tenant)/+layout.server.ts",
+  "src/routes/(tenant)/+layout.svelte",
+  "src/routes/(tenant)/+page.server.ts",
+  "src/routes/(tenant)/+page.svelte",
+  "src/routes/(tenant)/+error.svelte",
+  "src/lib/server/queries/users.ts",
+  "src/lib/server/queries/resumes.ts",
+  "src/lib/server/routing.ts",
+  "src/lib/themes/index.ts",
+  "src/lib/themes/types.ts",
+  "src/hooks.server.ts",
+  "src/app.d.ts",
+]
+dependencies = []

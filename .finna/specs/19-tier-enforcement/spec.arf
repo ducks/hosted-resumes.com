@@ -1,0 +1,198 @@
+order = 19
+what = "Add server-side tier enforcement middleware and UI gating so premium features (custom domains, extra themes, PDF export, unlimited resumes) are only accessible to users on the correct subscription tier"
+why = "Without enforcement the tier column is decorative - every user gets every feature regardless of subscription state. This step is the paywall boundary that makes the Stripe integration (step 18) meaningful. It must be enforced server-side (hooks and page/API loads) to prevent bypass, and reflected in the UI to guide users toward upgrading rather than hitting opaque 403 errors."
+how = """
+Step-by-step implementation plan:
+
+1. Create a tier configuration module at
+   src/lib/tier.ts that defines the feature matrix
+   and helper functions shared by server and client:
+
+   - Define a TierConfig type:
+     {
+       maxResumes: number;
+       themes: string[];
+       pdfExport: boolean;
+       customDomain: boolean;
+       analytics: boolean;
+     }
+
+   - Export a TIER_CONFIG record mapping tier names to
+     their config:
+     const TIER_CONFIG: Record<string, TierConfig> = {
+       free: {
+         maxResumes: 1,
+         themes: ['classic'],
+         pdfExport: false,
+         customDomain: false,
+         analytics: false,
+       },
+       pro: {
+         maxResumes: Infinity,
+         themes: ['classic', 'modern', 'minimal'],
+         pdfExport: true,
+         customDomain: false,
+         analytics: false,
+       },
+       business: {
+         maxResumes: Infinity,
+         themes: ['classic', 'modern', 'minimal'],
+         pdfExport: true,
+         customDomain: true,
+         analytics: true,
+       },
+     };
+
+   - Export helper functions:
+     getTierConfig(tier: string): TierConfig
+       Returns TIER_CONFIG[tier] or falls back to
+       TIER_CONFIG.free for unknown values.
+
+     canAccessTheme(tier: string, theme: string): boolean
+     canExportPdf(tier: string): boolean
+     canUseCustomDomain(tier: string): boolean
+     getMaxResumes(tier: string): number
+     getThemesForTier(tier: string): string[]
+
+   This module has no server-only imports so it can be
+   used in both server loads and Svelte components for
+   UI gating.
+
+2. Add a tier enforcement hook to src/hooks.server.ts.
+   Add a third hook function to the existing sequence()
+   call (after routing and auth):
+
+   const tierEnforcement: Handle = async ({
+     event, resolve
+   }) => {
+     const user = event.locals.user;
+     if (!user) return resolve(event);
+     event.locals.tierConfig = getTierConfig(user.tier);
+     return resolve(event);
+   };
+
+   export const handle = sequence(
+     routing, auth, tierEnforcement
+   );
+
+   Update src/app.d.ts to add tierConfig to Locals.
+   This hook attaches resolved tier config to locals
+   so page loads and API routes can reference it
+   without re-deriving. Actual enforcement happens at
+   the feature boundary, not in the hook.
+
+3. Enforce resume creation limits in the resume CRUD
+   API at src/routes/api/resumes/+server.ts (POST):
+
+   - Call countResumesByUser(locals.user.id).
+   - Compare against getMaxResumes(locals.user.tier).
+   - If count >= max, return 403 with:
+     { error: 'Resume limit reached.', code: 'RESUME_LIMIT' }
+   - Server check prevents API bypass of UI gate.
+
+4. Enforce theme access in the editor page load at
+   src/routes/(app)/editor/[resumeId]/+page.server.ts:
+
+   - If stored theme not allowed for tier, fall back
+     to 'classic' for rendering (do NOT change the
+     database value - preserves selection for re-upgrade).
+   - Return allowedThemes list so the selector only
+     shows accessible options.
+   - Validate theme in form action before saving:
+     reject disallowed themes with fail(403).
+
+5. Enforce PDF export at
+   src/routes/api/export/pdf/+server.ts:
+
+   - At the top of POST handler, check canExportPdf.
+   - Return 403 with code 'PDF_TIER_REQUIRED' if not
+     allowed.
+
+6. Enforce custom domain access in settings page load
+   at src/routes/(app)/settings/+page.server.ts:
+
+   - Return canUseCustomDomain boolean to the page.
+   - Reject custom domain save actions with fail(403)
+     if user lacks Business tier.
+
+7. Gate the theme selector UI in the editor component
+   at src/routes/(app)/editor/[resumeId]/+page.svelte:
+
+   - Show all themes but disable locked ones with an
+     UpgradeBadge showing the required tier. Users see
+     what they are missing without hitting errors.
+
+8. Gate the resume creation button in the dashboard
+   at src/routes/(app)/dashboard/+page.svelte:
+
+   - When resumeCount >= getMaxResumes(tier), replace
+     "New resume" with a disabled state and upgrade link
+     to /settings.
+
+9. Gate the PDF export button in the editor toolbar:
+
+   - Render disabled with "Pro" badge when
+     canExportPdf(tier) is false.
+
+10. Gate custom domain settings in the settings page:
+
+    - Show locked upgrade prompt when canUseCustomDomain
+      is false; show management form when true.
+
+11. Create src/lib/components/UpgradeBadge.svelte:
+
+    - Accepts requiredTier prop ('pro' or 'business').
+    - Renders a small inline pill/tag with the tier name.
+    - Reused by theme selector, PDF button, and custom
+      domain section for consistent locked-feature UX.
+
+12. Handle tier downgrades gracefully:
+
+    - Existing resumes NOT deleted on downgrade.
+    - Non-classic themes fall back to 'classic' in the
+      editor without changing the stored database value
+      (preserves selection for re-upgrade).
+    - PDF export returns 403 until re-upgrade.
+    - Custom domain shown as locked in settings UI.
+    - This "soft downgrade" avoids destructive changes
+      to user data.
+
+13. Write tests in src/lib/tier.test.ts:
+
+    a. Unit test getTierConfig for each tier including
+       unknown-string fallback to free.
+    b. Unit test all helper functions (canAccessTheme,
+       canExportPdf, canUseCustomDomain, etc.).
+    c. Integration tests for enforcement points:
+       resume creation 403, theme save 403, PDF 403.
+    Use vitest with mocked locals and queries.
+
+14. Verify end-to-end:
+    - Free user with 1 resume: "New resume" disabled.
+    - Free user: only 'classic' selectable, others locked.
+    - Free user: PDF button disabled, API returns 403.
+    - Set tier to 'pro': all themes unlock, PDF works.
+    - Revert to 'free': stored 'modern' theme falls back
+      to 'classic' without changing DB value.
+"""
+backup = "If the centralized TIER_CONFIG approach creates circular import issues between server and client modules, split into src/lib/tier-config.ts (pure data) and src/lib/server/tier.ts (server helpers that import from tier-config). If the hooks.server.ts tierEnforcement hook adds measurable latency, remove it and call getTierConfig inline in the page loads and API routes that need it."
+
+[context]
+files = [
+  "src/lib/tier.ts",
+  "src/lib/tier.test.ts",
+  "src/lib/components/UpgradeBadge.svelte",
+  "src/hooks.server.ts",
+  "src/app.d.ts",
+  "src/routes/api/resumes/+server.ts",
+  "src/routes/api/export/pdf/+server.ts",
+  "src/routes/(app)/editor/[resumeId]/+page.server.ts",
+  "src/routes/(app)/editor/[resumeId]/+page.svelte",
+  "src/routes/(app)/dashboard/+page.svelte",
+  "src/routes/(app)/dashboard/+page.server.ts",
+  "src/routes/(app)/settings/+page.server.ts",
+  "src/routes/(app)/settings/+page.svelte",
+  "src/lib/server/stripe.ts",
+  "src/lib/server/queries/resumes.ts",
+]
+dependencies = ["@sveltejs/kit (built-in)", "vitest"]
