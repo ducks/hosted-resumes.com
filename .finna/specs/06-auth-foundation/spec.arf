@@ -124,3 +124,4 @@ files = [
   "src/lib/server/auth.test.ts",
 ]
 dependencies = ["node:crypto (built-in)", "drizzle-orm", "pg"]
+outcome = "success"

@@ -118,3 +118,4 @@ files = [
   "src/lib/server/stripe.ts",
 ]
 dependencies = ["drizzle-orm", "drizzle-kit", "pg"]
+outcome = "success"

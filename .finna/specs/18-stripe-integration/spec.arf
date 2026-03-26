@@ -243,3 +243,4 @@ files = [
   ".env.example",
 ]
 dependencies = ["stripe"]
+outcome = "success"

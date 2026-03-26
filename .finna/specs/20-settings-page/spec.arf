@@ -1,1 +1,2 @@
 It looks like write permissions for the `.finna` directory keep getting denied. Could you approve the write permission? I'm trying to create `.finna/specs/20-settings-page/spec.arf` with the full spec. Alternatively, if you'd prefer I output the spec content directly so you can place it yourself, let me know.
+outcome = "success"

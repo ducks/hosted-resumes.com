@@ -98,3 +98,4 @@ backup = "If Docker is not available on the dev machine, fall back to running Po
 [context]
 files = [".finna/roadmap.arf", ".finna/specs/01-scaffold-sveltekit/spec.arf", "README.md", ".env.example", "Makefile", ".gitignore"]
 dependencies = ["docker", "docker-compose"]
+outcome = "success"

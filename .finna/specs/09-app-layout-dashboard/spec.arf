@@ -256,3 +256,4 @@ files = [
   "src/routes/(marketing)/register/+page.svelte",
 ]
 dependencies = ["@sveltejs/kit (built-in)", "drizzle-orm"]
+outcome = "success"

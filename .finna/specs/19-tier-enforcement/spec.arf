@@ -196,3 +196,4 @@ files = [
   "src/lib/server/queries/resumes.ts",
 ]
 dependencies = ["@sveltejs/kit (built-in)", "vitest"]
+outcome = "success"

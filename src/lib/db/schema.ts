@@ -9,8 +9,9 @@ export const users = pgTable('users', {
   username: text('username').notNull().unique(), // used for subdomain: username.hosted-resumes.com
   displayName: text('display_name'),
   tier: text('tier').notNull().default('free'), // 'free', 'pro', 'business'
-  stripeCustomerId: text('stripe_customer_id'),
+  stripeCustomerId: text('stripe_customer_id').unique(),
   stripeSubscriptionId: text('stripe_subscription_id'),
+  subscriptionStatus: text('subscription_status'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
@@ -48,9 +49,11 @@ export const resumeVersions = pgTable('resume_versions', {
 
 // Sessions table - for authentication sessions
 export const sessions = pgTable('sessions', {
-  id: text('id').primaryKey(),
+  id: text('id').primaryKey().$defaultFn(() => createId()),
   userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  token: text('token').notNull().unique(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 // Types derived from schema

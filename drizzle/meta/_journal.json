@@ -8,6 +8,20 @@
       "when": 1774495331000,
       "tag": "0000_nervous_metal_master",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1774545144896,
+      "tag": "0001_sudden_taskmaster",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1774545534503,
+      "tag": "0002_shallow_red_hulk",
+      "breakpoints": true
     }
   ]
 }

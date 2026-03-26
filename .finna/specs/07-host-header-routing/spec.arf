@@ -168,3 +168,4 @@ files = [
   ".env.example",
 ]
 dependencies = ["@sveltejs/kit (sequence helper, built-in)"]
+outcome = "success"

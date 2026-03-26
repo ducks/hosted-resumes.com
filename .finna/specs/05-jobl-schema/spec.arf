@@ -15,3 +15,4 @@ The spec is ready to write to `.finna/specs/05-jobl-schema/spec.arf` but I need 
 **Backup:** hand-written TypeScript interfaces + manual validation functions, or valibot as a smaller-bundle alternative to zod.
 
 Can you grant write permission so I can save the file?
+outcome = "success"

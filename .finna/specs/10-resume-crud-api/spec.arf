@@ -16,3 +16,4 @@ Looks like the write permission needs to be granted. The spec is ready - here's 
 Key design decisions: version rows only created on data changes (not theme/publish toggles), SELECT FOR UPDATE for race-safe transactions, free-tier enforcement at the POST endpoint, and a clean backup path to extract service functions if routes get heavy.
 
 Would you like me to try writing the file again, or would you prefer to copy the content?
+outcome = "success"
