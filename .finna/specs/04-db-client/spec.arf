@@ -1,10 +1,31 @@
-The spec is ready to write to `.finna/specs/04-db-client/spec.arf` but I need write permission for that path. Can you allow it?
+name = "db-client"
+summary = "Connection pooling, migration runner, and typed query helpers for users, resumes, and resume_versions"
+depends_on = ["database-schema"]
 
-Key decisions in the spec:
+[decisions]
+schema_location = "src/lib/db/schema.ts remains the single source of truth for types and migrations"
+connection_pool = "singleton postgres.js pool (max 10) wrapped by drizzle, exported from src/lib/db/client.ts"
+migration_dev = "auto-runs via hooks.server.ts on dev startup using drizzle migrator"
+migration_prod = "explicit make db-migrate runs scripts/migrate.ts with tsx"
+query_helpers = "three modules under src/lib/server/queries/ (users, resumes, resume-versions) with typed functions inferred from drizzle schema"
+version_numbering = "computed via coalesce(max(version_number), 0) + 1 inside a transaction with the resume update"
+fallback = "raw pg pool exported from src/lib/db/client.ts for hand-written SQL if drizzle causes issues"
 
-- **Schema as code**: drizzle table definitions in `src/lib/server/schema.ts` are the single source of truth for both TypeScript types and SQL migrations - replaces hand-written SQL from step 03
-- **Connection pooling**: singleton pg Pool (max 10) wrapped by drizzle, exported from `src/lib/server/db.ts`
-- **Migration runner**: `src/lib/server/migrate.ts` using drizzle's migrator, auto-runs in dev via `hooks.server.ts`, explicit `make db-migrate` in production
-- **Query helpers**: three modules under `src/lib/server/queries/` (users, resumes, resume-versions) with typed functions inferred from the drizzle schema
-- **Version numbering**: computed via `max(version_number) + 1` inside a transaction with the resume update
-- **Fallback**: raw pg Pool with hand-written SQL if drizzle causes issues
+[files]
+modified = [
+  "src/lib/db/client.ts",
+  "src/lib/db/index.ts",
+  "Makefile",
+  "package.json",
+]
+created = [
+  "src/lib/server/migrate.ts",
+  "src/lib/server/queries/users.ts",
+  "src/lib/server/queries/resumes.ts",
+  "src/lib/server/queries/resume-versions.ts",
+  "src/lib/server/queries/index.ts",
+  "src/hooks.server.ts",
+  "scripts/migrate.ts",
+]
+
+outcome = "success"

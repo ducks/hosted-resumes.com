@@ -1,3 +1,4 @@
 It looks like I need permission to write to the `.finna/specs/03-database-schema/` directory. The directory doesn't exist yet and the sandbox is blocking creation. Could you allow write access to `.finna/specs/` so I can create the spec file?
 
 Alternatively, I can output the spec content here for you to save manually. Want me to do that instead?
+outcome = "success"

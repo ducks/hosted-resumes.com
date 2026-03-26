@@ -86,12 +86,6 @@ summary = "Implement src/routes/(tenant)/ layout and page that looks up user by 
 depends_on = ["host-header-routing", "theme-components", "db-client"]
 
 [[steps]]
-order = 15
-name = "s3-uploads"
-summary = "Implement src/lib/server/s3.ts client and src/routes/api/upload/+server.ts endpoint for profile photo and asset uploads to S3/MinIO with signed URLs"
-depends_on = ["auth-foundation"]
-
-[[steps]]
 order = 16
 name = "pdf-service"
 summary = "Create Rust microservice in pdf-service/ using axum and SRG that accepts HTML via POST and returns PDF bytes; add Cargo.toml, main.rs, health check endpoint"

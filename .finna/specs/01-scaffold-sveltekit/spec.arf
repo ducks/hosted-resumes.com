@@ -69,3 +69,4 @@ backup = "If sv create fails or conflicts with existing files, manually init by 
 [context]
 files = ["README.md", ".finna/roadmap.arf"]
 dependencies = ["@sveltejs/kit", "@sveltejs/adapter-node", "svelte", "vite", "typescript", "drizzle-orm", "drizzle-kit", "pg", "@types/pg"]
+outcome = "success"

@@ -248,3 +248,4 @@ files = [
   "src/lib/server/routing.ts",
 ]
 dependencies = ["caddy (with caddy-dns/cloudflare plugin)", "xcaddy (for building custom caddy)"]
+outcome = "success"

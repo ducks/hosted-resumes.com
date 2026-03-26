@@ -1,0 +1,177 @@
+# CI/CD: Build, test, and deploy hosted-resumes.com
+#
+# Required GitHub Actions secrets:
+#   DEPLOY_HOST    - VPS hostname or IP
+#   DEPLOY_USER    - SSH user on the VPS
+#   DEPLOY_SSH_KEY - Private SSH key (ed25519 recommended)
+#
+# VPS prerequisites:
+#   - Node.js 22 and pnpm installed (for pnpm install on server)
+#   - systemd services: hosted-resumes, hosted-resumes-pdf
+#   - Deploy user has passwordless sudo for systemctl restart
+#     of those two services
+#   - /opt/hosted-resumes/ and /opt/hosted-resumes/pdf-service/
+#     directories exist and are writable by DEPLOY_USER
+#   - .env with production values at /opt/hosted-resumes/.env
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "22"
+  RUST_TOOLCHAIN: "stable"
+
+jobs:
+  test-sveltekit:
+    name: Build & Test SvelteKit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm run check
+
+      - run: pnpm run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sveltekit-build
+          path: build/
+          retention-days: 1
+
+  test-pdf-service:
+    name: Build & Test PDF Service
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            pdf-service/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('pdf-service/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Check
+        run: cargo check --manifest-path pdf-service/Cargo.toml
+
+      - name: Test
+        run: cargo test --manifest-path pdf-service/Cargo.toml
+
+      - name: Build release
+        run: cargo build --release --manifest-path pdf-service/Cargo.toml
+
+      - name: Strip binary
+        run: strip pdf-service/target/release/pdf-service
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pdf-service-binary
+          path: pdf-service/target/release/pdf-service
+          retention-days: 1
+
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    needs: [test-sveltekit, test-pdf-service]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sveltekit-build
+          path: build/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: pdf-service-binary
+          path: pdf-service-binary/
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy SvelteKit app
+        run: |
+          rsync -az --delete \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            build/ package.json pnpm-lock.yaml \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/opt/hosted-resumes/
+
+          ssh -i ~/.ssh/deploy_key \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "cd /opt/hosted-resumes && pnpm install --frozen-lockfile --prod"
+
+      - name: Deploy PDF service binary
+        run: |
+          scp -i ~/.ssh/deploy_key \
+            pdf-service-binary/pdf-service \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/opt/hosted-resumes/pdf-service/pdf-service
+
+          ssh -i ~/.ssh/deploy_key \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "chmod +x /opt/hosted-resumes/pdf-service/pdf-service"
+
+      - name: Run database migrations
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "cd /opt/hosted-resumes && pnpm drizzle-kit push"
+
+      - name: Restart services
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "sudo systemctl restart hosted-resumes && sudo systemctl restart hosted-resumes-pdf"
+
+      - name: Health check
+        run: |
+          sleep 5
+
+          ssh -i ~/.ssh/deploy_key \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            'curl -sf http://localhost:3000 > /dev/null' || {
+            echo "SvelteKit health check failed"
+            ssh -i ~/.ssh/deploy_key \
+              ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+              "sudo journalctl -u hosted-resumes -n 50 --no-pager"
+            exit 1
+          }
+
+          ssh -i ~/.ssh/deploy_key \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            'curl -sf http://localhost:3001/health > /dev/null' || {
+            echo "PDF service health check failed"
+            ssh -i ~/.ssh/deploy_key \
+              ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+              "sudo journalctl -u hosted-resumes-pdf -n 50 --no-pager"
+            exit 1
+          }
+
+          echo "Both services are healthy"

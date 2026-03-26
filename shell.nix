@@ -2,20 +2,20 @@
 
 pkgs.mkShell {
   buildInputs = with pkgs; [
-    volta
+    nodejs_22
+    nodePackages.pnpm
     postgresql
+    rustc
+    cargo
+    pkg-config
+    openssl
   ];
 
   shellHook = ''
     echo "hosted-resumes.com dev environment"
-
-    # Volta manages Node and pnpm versions
-    export VOLTA_HOME="$HOME/.volta"
-    export PATH="$VOLTA_HOME/bin:$PATH"
-
-    echo "Volta: $(volta --version 2>/dev/null || echo 'installing...')"
-    echo "Node.js: $(node --version 2>/dev/null || echo 'run: volta install node@lts')"
-    echo "pnpm: $(pnpm --version 2>/dev/null || echo 'run: volta install pnpm')"
+    echo "Node.js: $(node --version)"
+    echo "pnpm: $(pnpm --version)"
     echo "PostgreSQL client: $(psql --version)"
+    echo "Rust: $(rustc --version)"
   '';
 }

@@ -126,3 +126,4 @@ dependencies = [
   "rsync",
   "ssh-keyscan",
 ]
+outcome = "success"

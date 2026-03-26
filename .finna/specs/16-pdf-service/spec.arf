@@ -163,3 +163,4 @@ files = [
   ".env.example",
 ]
 dependencies = ["axum", "tokio", "srg", "tower-http", "tracing", "tracing-subscriber", "serde"]
+outcome = "success"
