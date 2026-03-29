@@ -28,6 +28,12 @@ export const resumes = pgTable('resumes', {
   theme: text('theme').notNull().default('classic'), // 'classic', 'modern', 'minimal'
   isPublished: boolean('is_published').notNull().default(false),
   joblContent: jsonb('jobl_content').notNull(), // JOBL-formatted resume data as JSON
+  sourceType: text('source_type').notNull().default('manual'), // 'manual' or 'repo'
+  repoUrl: text('repo_url'), // Git repo URL (GitHub, GitLab, etc.)
+  repoPath: text('repo_path'), // Path to JOBL file within repo (e.g. 'resume.jobl.json')
+  repoBranch: text('repo_branch').default('main'), // Branch to sync from
+  lastSyncedAt: timestamp('last_synced_at'),
+  syncError: text('sync_error'), // Last sync error message if any
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
