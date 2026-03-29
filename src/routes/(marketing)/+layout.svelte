@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { LayoutData } from './$types';
 
-  export let data: LayoutData;
+  let { data }: { data: LayoutData } = $props();
 </script>
 
 <div class="marketing">
@@ -27,7 +27,7 @@
     <div class="footer-inner">
       <p>&copy; {new Date().getFullYear()} hosted-resumes.com</p>
       <div class="footer-links">
-        <a href="https://github.com/rektdeckard/jobl">JOBL spec</a>
+        <a href="https://jobl.dev">JOBL spec</a>
         <a href="/register" class="footer-cta">Sign up</a>
       </div>
     </div>

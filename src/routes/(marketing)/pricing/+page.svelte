@@ -65,7 +65,7 @@
         JOBL is a structured, human-readable resume format. It keeps
         your data portable and separate from presentation. Learn more
         in the
-        <a href="https://github.com/rektdeckard/jobl">JOBL spec</a>.
+        <a href="https://jobl.dev">JOBL spec</a>.
       </p>
     </div>
 
